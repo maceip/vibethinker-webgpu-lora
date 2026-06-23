@@ -602,11 +602,44 @@ export const ARGMAX = `
 var<workgroup> bv: array<f32,256>; var<workgroup> bi: array<u32,256>;
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
-  let tid = lid.x; var v = -1e30; var idx = 0u;
-  for (var i = tid; i < n; i = i + 256u) { let x = logits[i]; if (x > v) { v = x; idx = i; } }
+  let tid = lid.x; var v = -1e30; var idx = 0xffffffffu;
+  for (var i = tid; i < n; i = i + 256u) { let x = logits[i]; if (x > v || (x == v && i < idx)) { v = x; idx = i; } }
   bv[tid] = v; bi[tid] = idx; workgroupBarrier();
-  for (var s = 128u; s > 0u; s = s/2u) { if (tid < s) { if (bv[tid+s] > bv[tid]) { bv[tid] = bv[tid+s]; bi[tid] = bi[tid+s]; } } workgroupBarrier(); }
+  for (var s = 128u; s > 0u; s = s/2u) { if (tid < s) { let ov = bv[tid+s]; let oi = bi[tid+s]; if (ov > bv[tid] || (ov == bv[tid] && oi < bi[tid])) { bv[tid] = ov; bi[tid] = oi; } } workgroupBarrier(); }
   if (tid == 0u) { out[0] = bi[0]; }
+}`;
+
+// Repeated exact top-k selection over logits. Each dispatch selects one rank:
+// ids[selectedCount] / vals[selectedCount] = best logit whose id is not already
+// present in ids[0..selectedCount). This keeps sampling readback to O(k) tokens
+// instead of copying the full vocab-sized logits buffer every generated token.
+export const TOPK_SELECT = `
+@group(0) @binding(0) var<storage,read> logits: array<f32>;
+@group(0) @binding(1) var<storage,read_write> ids: array<u32>;
+@group(0) @binding(2) var<storage,read_write> vals: array<f32>;
+@group(0) @binding(3) var<uniform> m: vec2<u32>; // vocabSize, selectedCount
+var<workgroup> bv: array<f32,256>; var<workgroup> bi: array<u32,256>;
+fn alreadySelected(id: u32, n: u32) -> bool {
+  for (var j = 0u; j < n; j = j + 1u) { if (ids[j] == id) { return true; } }
+  return false;
+}
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let tid = lid.x; let n = m.x; let selected = m.y;
+  var v = -1e30; var idx = 0xffffffffu;
+  for (var i = tid; i < n; i = i + 256u) {
+    let x = logits[i];
+    if (!alreadySelected(i, selected) && (x > v || (x == v && i < idx))) { v = x; idx = i; }
+  }
+  bv[tid] = v; bi[tid] = idx; workgroupBarrier();
+  for (var s = 128u; s > 0u; s = s/2u) {
+    if (tid < s) {
+      let ov = bv[tid+s]; let oi = bi[tid+s];
+      if (ov > bv[tid] || (ov == bv[tid] && oi < bi[tid])) { bv[tid] = ov; bi[tid] = oi; }
+    }
+    workgroupBarrier();
+  }
+  if (tid == 0u) { ids[selected] = bi[0]; vals[selected] = bv[0]; }
 }`;
 
 // int4 group-128 GEMV. w: [N][K/8] (8 signed nibbles/word). scale: [N][gpr].

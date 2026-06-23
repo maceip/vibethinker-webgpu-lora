@@ -34,10 +34,11 @@ LiteRT.js (`@litertjs/tensor` unpublished + needs unbuilt `@ml_drift`).
 ## Architecture
 - `src/qwgpu/kernels.js` — WGSL: GEMV (int8, lm_head), GEMV4 (int4 group-128, layers),
   LORA_A (parallel subgroup GEMV), RMSNORM, ROPE (pair-wise, no race), ATTN_PARTIAL +
-  ATTN_COMBINE (split-K decode attention), ADD, SILUMUL, EMBED, ARGMAX.
+  ATTN_COMBINE (split-K decode attention), ADD, SILUMUL, EMBED, ARGMAX, TOPK_SELECT.
 - `src/qwgpu/runtime.js` — `QwenWGPU`: build() loads+quantizes (int4 layers, int8 embed),
   KV cache, RoPE tables; token()/step()/argmaxLogits(); setLora()/clearLora() (live swap);
-  gemv()/gemv4()/attn() (2-pass split-K); enableProf()/profToken() (GPU timestamp profiling).
+  gemv()/gemv4()/attn() (2-pass split-K); GPU top-k sampling; decode-batch tuning;
+  enableProf()/profToken() (GPU timestamp profiling).
 - `src/qwgpu/quantize.js` — int8 per-channel + int4 group-128 (both preserve output EXACTLY).
 - `src/weights.js` — per-tensor Range-fetch safetensors, BF16→F32.
 - `src/lora_gpu.js` — tf-free PEFT/MLX adapter → GPU buffers (A transposed [rank][in], B [rank][out]).
@@ -53,9 +54,12 @@ LiteRT.js (`@litertjs/tensor` unpublished + needs unbuilt `@ml_drift`).
    nHeads*nsplit workgroups. Attention at ctx=3218: 18ms → 5ms. Scales to 4k+ context.
 5. App streaming: O(n^2) `textContent +=` → text-node appendData (O(n)).
 6. GPU-resident batched decode: argmax->embed chained on GPU (EMBED_BUF reads the
-   argmax id from a buffer), token ids read back once per 16-token batch instead of a
-   blocking mapAsync every token. App 22.9 → 35.4 tok/s (measured: per-token gpu/dec/dom
-   showed ALL cost was the per-token argmax sync + paint-during-await, not JS).
+   argmax id from a buffer), token ids read back once per selected batch instead of a
+   blocking mapAsync every token. Batch size is now configurable/autotunable, starts small
+   for interactivity/EOS, and grows for throughput. App 22.9 → 35.4 tok/s in the measured run.
+7. Sampling mode no longer maps full vocab logits per token: TOPK_SELECT reads back only
+   `k` ids/logits for CPU temperature/top-p sampling. Greedy argmax also reuses a persistent
+   4-byte MAP_READ buffer.
 
 Profiling tool: `profile_wgpu.js` + `--disable-dawn-features=timestamp_quantization`
 gives ns-resolution per-kernel GPU time. `prof.cap` query slots.
@@ -66,8 +70,10 @@ cd ~/edge-thinker/qwen-webgpu
 npx http-server . -p 8013 -c-1 --cors &              # serve app + ./model symlink
 node test/run_vwg.mjs       # base correctness: argmax 4913, gen==ref, speed
 node test/run_lorav.mjs     # LoRA hot-swap 6/6 + determinism + LoRA-active speed
+node test/run_sampling.mjs  # GPU top-k sampling correctness + smoke speed
 node test/run_prof.mjs      # per-kernel GPU breakdown (edit WARM for ctx length)
 node test/run_app_e2e.mjs   # full app: load 3B, run triage, measure tok/s
+npm run bench:wgpu          # structured load/prefill/decode/sampling/LoRA benchmark rows
 # or open http://localhost:8013/ in a WebGPU browser (needs 'subgroups' feature)
 ```
 Requires: WebGPU + `subgroups` device feature. Tested in Chrome Canary
@@ -93,15 +99,16 @@ than sequential). T>1 kernels: `GEMM4`, `RMSNORM_T` (one wg/row), `ROPE_T`, `EMB
 - **`ADD`/`SILUMUL`/`EMBED_T` are grid-stride** (use `num_workgroups`): at T=8192, n reaches
   T·I≈90M → 352k workgroups, far past the 65535/dim dispatch limit; grid-stride + a 65535
   cap covers any n. (Backward-compatible: decode's tiny n loops once.)
-- Context + prefill are configurable: `new QwenWGPU(dev, cfg, { maxCtx, maxPrefillT })`
+- Context, prefill, decode batching, sampling top-k, and scratch budget are configurable:
+  `new QwenWGPU(dev, cfg, { maxCtx, maxPrefillT, decodeBatchSize, samplingTopK, maxPrefillScratchBytes })`
   (default 8192/8192; base VibeThinker-3B allows up to 128K — KV cache ~72KB/token is the cost).
   `prefillBatch(ids)`: lazy scratch sized to the prompt. Verified maxCtx=16384 prefills 9000 tokens.
 - Validated in-browser: batched == sequential bit-exact at L=16/17/256/257/512/1024
   (incl. multi-block flash, ctx>256); 4096 prefill 6.6s, 8192 prefill 20s, both finite +
   valid argmax. GEMM verified vs CPU (err 2.5e-6). Decode/LoRA still match HF after the
   ADD/SILUMUL change (argmax 4913, hot-swap 5/5).
-- Base-model only — LoRA-active prefill falls back to sequential (proven adapter-correct
-  path). Decode stops at maxCtx (KV-cache guard).
+- LoRA-active batched prefill is validated against the sequential adapter path. Decode stops
+  at maxCtx (KV-cache guard), and the benchmark harness reports KV/prefill scratch estimates.
 
 ## Verified against the VibeThinker-3B repo (no runtime surprises)
 - **Config matches** `QWEN25_3B` exactly: hidden 2048 / 36 layers / 16 heads / 2 KV / inter 11008 /

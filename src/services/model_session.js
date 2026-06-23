@@ -10,18 +10,39 @@ async function buildTokenizer(reader) {
   return new PreTrainedTokenizer(tj, tc);
 }
 
-function sample(logits, temperature) {
-  let best = 0, bv = -Infinity; for (let i = 0; i < logits.length; i++) if (logits[i] > bv) { bv = logits[i]; best = i; }
-  if (!temperature || temperature <= 0) return best;
-  let sum = 0; const p = new Float32Array(logits.length);
-  for (let i = 0; i < logits.length; i++) { const e = Math.exp((logits[i] - bv) / temperature); p[i] = e; sum += e; }
-  let r = Math.random() * sum, c = 0; for (let i = 0; i < p.length; i++) { c += p[i]; if (r <= c) return i; } return p.length - 1;
+function randomUnit() {
+  if (globalThis.crypto?.getRandomValues) {
+    const u = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(u);
+    return u[0] / 4294967296;
+  }
+  return Math.random();
+}
+
+function sampleTopK(candidates, { temperature, topP = 1.0 }) {
+  if (!temperature || temperature <= 0) return candidates[0]?.id ?? 0;
+  const best = candidates[0]?.logit ?? 0;
+  const weighted = candidates.map(c => ({ id: c.id, w: Math.exp((c.logit - best) / temperature) }));
+  let sum = weighted.reduce((a, c) => a + c.w, 0);
+  if (topP > 0 && topP < 1 && weighted.length > 1 && sum > 0) {
+    let csum = 0, keep = 0;
+    for (; keep < weighted.length; keep++) {
+      csum += weighted[keep].w / sum;
+      if (csum >= topP) { keep++; break; }
+    }
+    weighted.length = Math.max(1, keep);
+    sum = weighted.reduce((a, c) => a + c.w, 0);
+  }
+  let r = randomUnit() * sum, c = 0;
+  for (const item of weighted) { c += item.w; if (r <= c) return item.id; }
+  return weighted[weighted.length - 1]?.id ?? candidates[0]?.id ?? 0;
 }
 
 export class ModelSession {
-  constructor({ cfg = QWEN25_3B, log = () => {} } = {}) {
+  constructor({ cfg = QWEN25_3B, log = () => {}, runtimeOptions = {} } = {}) {
     this.cfg = cfg;
     this.log = log;
+    this.runtimeOptions = { decodeBatchSize: 'auto', samplingTopK: 40, ...runtimeOptions };
     this.dev = null;
     this.rt = null;
     this.tokenizer = null;
@@ -33,10 +54,12 @@ export class ModelSession {
     this.tokenizer = await buildTokenizer(reader);
     this.log(`tokenizer loaded. streaming + quantizing weights (int4) from ${label}…`);
     const t0 = performance.now();
-    this.rt = new QwenWGPU(this.dev, this.cfg);
+    this.rt = new QwenWGPU(this.dev, this.cfg, this.runtimeOptions);
     await this.rt.build(reader, (msg, frac) => this.log(`weights: ${msg} ${(frac * 100).toFixed(0)}%`));
     window.__rt = this.rt; window.__tokenizer = this.tokenizer;
-    this.log(`READY in ${((performance.now() - t0) / 1000).toFixed(1)}s — base loaded once; adapters hot-swap live.`);
+    const tuning = this.rt.decodeBatchTuning;
+    const tuned = tuning ? ` decodeBatch=${tuning.selected} (${tuning.reason})` : '';
+    this.log(`READY in ${((performance.now() - t0) / 1000).toFixed(1)}s — base loaded once; adapters hot-swap live.${tuned}`);
     return this;
   }
 
@@ -47,7 +70,11 @@ export class ModelSession {
     await rb.mapAsync(GPUMapMode.READ); const a = new Float32Array(rb.getMappedRange()).slice(); rb.unmap(); rb.destroy(); return a;
   }
 
-  async *generate(messages, { maxTokens = 1024, temperature = 0.0, stopIds = [151645, 151643] } = {}) {
+  async sampleNextToken({ temperature, topK = this.rt.samplingTopK, topP = 1.0 } = {}) {
+    return sampleTopK(await this.rt.topKLogits(topK), { temperature, topP });
+  }
+
+  async *generate(messages, { maxTokens = 1024, temperature = 0.0, topK, topP = 1.0, stopIds = [151645, 151643] } = {}) {
     const rt = this.rt, tokenizer = this.tokenizer;
     const ids = tokenizer.encode(formatMessages(tokenizer, messages));
     if (ids.length <= rt.maxPrefillT) rt.prefillBatch(ids);
@@ -56,11 +83,11 @@ export class ModelSession {
     const emit = (id) => tokenizer.decode([id], { skip_special_tokens: true });
 
     if (temperature > 0) {
-      let next = sample(await this.readLogits(), temperature);
+      let next = await this.sampleNextToken({ temperature, topK, topP });
       for (let step = 0; step < maxTokens; step++) {
         if (stopIds.includes(next)) break;
         const d = emit(next); if (d) yield d;
-        rt.token(next, pos); pos++; next = sample(await this.readLogits(), temperature);
+        rt.token(next, pos); pos++; next = await this.sampleNextToken({ temperature, topK, topP });
       }
       return;
     }
@@ -70,8 +97,11 @@ export class ModelSession {
     { const d = emit(first); if (d) yield d; }
     let emitted = 1;
     while (emitted < maxTokens && pos < rt.maxCtx) {
-      const K = Math.min(rt.MAXBATCH, maxTokens - emitted, rt.maxCtx - pos);
-      const batch = await rt.decodeBatch(pos, K); pos += K;
+      // Start with small batches for interactivity/EOS, then use the tuned
+      // greedy batch size. decodeGreedyBatch is greedy-only: sampled decoding
+      // stays one token at a time so it can feed the sampled id back into KV.
+      const K = rt.greedyBatchSizeFor({ emitted, remaining: maxTokens - emitted, pos });
+      const batch = await rt.decodeGreedyBatch(pos, K); pos += batch.length;
       let stop = false;
       for (const id of batch) {
         if (stopIds.includes(id)) { stop = true; break; }

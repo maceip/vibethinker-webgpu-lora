@@ -1,8 +1,8 @@
 <h1 align="center">🜂 EMBERGLASS</h1>
-<p align="center"><em>A 3-billion-parameter mind, running inside a browser tab. No server. No install. No upload. Just a page.</em></p>
+<p align="center"><em>A 3-billion-parameter model running inside a browser tab. No server, install, or upload.</em></p>
 
 <p align="center">
-<b>~35 tokens/sec decode · live LoRA hot-swap · bit-exact to the reference · 100% client-side WebGPU</b>
+<b>~35 tokens/sec decode · live LoRA hot-swap · bit-exact reference checks · 100% client-side WebGPU</b>
 </p>
 
 <p align="center"><a href="https://maceip.github.io/qwen-webgpu-lora/"><b>▶ Live demo</b></a> (bring your own model) · <a href="https://huggingface.co/macmacmacmac/qwen-webgpu-lora">model card</a></p>
@@ -11,63 +11,88 @@
 
 ## What this is
 
-Most "AI in the browser" is a thin client phoning home to someone else's GPU. **This isn't that.**
+Emberglass is a hand-built inference engine for a fine-tuned **Qwen2.5-3B**
+reasoning model that runs entirely on your own GPU from a static web page. The
+browser streams model shards with range requests, quantizes weights to int4 on
+upload, keeps the KV cache GPU-resident, and emits tokens without sending data
+off-device.
 
-Emberglass is a hand-built inference engine that runs a fine-tuned **Qwen2.5-3B** reasoning model **entirely on your own machine's GPU**, from inside a single static web page — written from the metal up in raw WebGPU compute shaders. The model thinks for thousands of tokens, streams a verdict, and **never sends a single byte off your device.** You bring the weights; the page brings the engine.
+Runtime LoRA hot-swap is built into the kernels: load the base once, parse a
+PEFT/MLX adapter into GPU buffers, switch adapters live, and clear back to the
+base without reloading or re-quantizing.
 
-And here's the part that shouldn't be possible at this speed: you can **swap the model's personality at runtime.** Load the base once, then hot-swap LoRA adapters *live* — no reload, no recompile, no re-quantization. The base weights never move. The output changes the instant you flip the adapter, and flips back **bit-for-bit identically** when you remove it. Specialize a generalist into a bug-bounty triage analyst, a code reviewer, a poet — mid-session, in milliseconds.
+## Why it is fast
 
-## Why it's hard (and why it's fast)
+- **Custom WGSL kernels** for GEMV/GEMM, attention, RoPE, RMSNorm, SwiGLU,
+  argmax, and top-k sampling.
+- **int4 group-128 layer weights** plus int8 embeddings for compact GPU memory
+  use while preserving reference-generation checks.
+- **Split-K decode attention** and GPU-resident greedy decode batching to avoid
+  one CPU/GPU synchronization per generated token.
+- **Batched prefill** via tiled GEMM and flash-style causal attention for much
+  faster time-to-first-token on medium and long prompts.
+- **Static uniform / bind-group caching** and reusable readback buffers to reduce
+  JavaScript/WebGPU object churn in hot paths.
+- **GPU top-k sampling** so non-greedy generation reads back only `k` ids/logits
+  instead of the full vocabulary every token.
 
-A browser tab is the most hostile environment imaginable for a 3B-parameter language model. No CUDA. No kernels from the vendor. No threads worth having. A 5.4 GB weight shard won't even fit in a single JavaScript array. Every fast path that exists on a server is closed.
+## Current result
 
-So we closed the gap by hand:
-
-- **Custom WGSL compute kernels** for every operation — GEMV, attention, RoPE, RMSNorm, SwiGLU — because we own every matmul, which is the *only* way LoRA could become a live, swappable thing instead of a baked-in constant.
-- **int4 group-128 quantization** that is **numerically exact** on the reference decode — half the memory, zero quality lost.
-- **Split-K flash-style decode attention** so the engine stays fast even when the model has thought itself out to thousands of tokens of context.
-- **Subgroup-reduction GEMV** tuned to the GPU's actual memory behavior — the single change that turned a sluggish kernel into a 7× faster one.
-- A **GPU-resident KV cache** and an in-shader RoPE that's free of the read/write race that quietly corrupts naïve implementations.
-
-Every one of those wins was found by **measuring** — nanosecond GPU timestamp profiling — not by guessing. The engine went from 9 tokens/sec to ~35 over one focused push, and every step is reproducible.
-
-## The result
-
-| | |
-|---|---|
-| **Decode speed** | ~35 tok/s sustained across a full multi-thousand-token reasoning generation |
-| **Correctness** | argmax + every generated token **exact** vs the HuggingFace reference; bit-exact run-to-run |
-| **LoRA hot-swap** | load base once · swap adapters live · perfect restore on clear · no reload |
-| **Footprint** | one static HTML page; weights supplied by the visitor (BYO-model) |
-| **Privacy** | absolute — inference never leaves the device |
-
-## How it works
-
-The page asks your browser for a WebGPU device, streams the model's weight tensors in over HTTP range requests (because the whole shard won't fit in memory), quantizes them to int4 on the way to the GPU, and builds a resident runtime: 36 transformer layers of custom compute passes, a GPU KV cache, and a sampling loop. A drag-and-dropped PEFT/MLX LoRA adapter is parsed in pure JS into GPU buffers and handed to the kernels — which fold it into the math at decode time. Pull it out and the base reasserts itself, exactly.
+Measured runs show ~35 tok/s sustained app decode, exact base argmax/generation
+checks against the HuggingFace reference, live LoRA swap/clear behavior, and
+structured benchmark rows for load, prefill, decode, sampling, LoRA, and profile
+regression tracking.
 
 ## Run it
 
 ```bash
 npm install
-npm run build                              # bundle src/main.js -> bundle.js + docs/bundle.js
-npx http-server . -p 8013 -c-1 --cors      # serve the page + your ./model
-# open http://localhost:8013 in a WebGPU browser with the `subgroups` feature
+npm run build
+npx http-server . -p 8013 -c-1 --cors
+# open http://localhost:8013 in a browser exposing WebGPU + the subgroups feature
 ```
 
-Verification harnesses (Playwright + Chrome Canary):
+Load weights from a Hugging Face repo id, same-origin `/model`, or a local
+directory picker. Optional HF tokens are supported for gated/private repos.
+
+## Verification and benchmarks
+
+The Playwright harnesses expect the app to be served on port `8013` and a browser
+with WebGPU `subgroups`. Set `CHROME_PATH` if Playwright should launch a specific
+Chrome/Canary binary.
 
 ```bash
-node test/run_vwg.mjs      # base correctness + decode speed
-node test/run_lorav.mjs    # LoRA hot-swap: 6/6 checks, bit-exact
-node test/run_prof.mjs     # per-kernel GPU time breakdown
-node test/run_app_e2e.mjs  # full app: load the model, triage a report, measure tok/s
+npm run test:correctness  # base argmax/generation + batched decode/prefill
+npm run test:prefill      # sequential-vs-batched prefill differentials + long smoke
+npm run test:lora         # adapter parse, hot-swap, restore, LoRA prefill, speed
+npm run test:sampling     # GPU top-k sampler correctness + sampled decode smoke
+npm run test:app          # full UI generation path
+npm run bench:wgpu        # structured VWG_BENCH JSON rows for perf regression tracking
 ```
 
-Requires a browser exposing WebGPU **with the `subgroups` device feature** (Chrome Canary: `--enable-unsafe-webgpu --use-angle=metal`). Built and validated on an Apple M5 Max.
+`bench:wgpu` reports time-to-ready, prefill by length, greedy decode by context,
+batch candidate timings, sampling throughput, timestamp categories when available,
+LoRA-on throughput when fixtures exist, and KV/prefill scratch estimates.
 
-## What it is not
+## Requirements
 
-It does not host your weights, phone home, or need a build toolchain (no wasm, no native, no bazel). It is a single page and a pile of shaders.
+- Browser WebGPU with the **`subgroups`** device feature. The current fast kernels
+  require subgroups and no fallback kernel set is bundled.
+- Enough GPU memory for the selected context window. KV cache grows linearly with
+  `maxCtx`; prefill scratch grows with prompt length.
+- Bring your own Qwen2.5-compatible weights. This repository and the demo page do
+  not host model weights.
+
+## Project layout
+
+- `src/qwgpu/` — WGSL kernels, runtime, quantization, schema/dispatch metadata,
+  streaming safetensors loader, and model uploader.
+- `src/services/` — app-facing model session, device, generation, prompt, and
+  adapter registry services.
+- `src/lora_gpu.js` — PEFT/MLX LoRA parser/uploader.
+- `test/` — browser correctness, profiling, sampling, prefill, LoRA, and benchmark
+  harnesses.
+- `docs/` — GitHub Pages static demo bundle.
 
 ---
 
