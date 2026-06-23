@@ -2,7 +2,7 @@ export async function initWebGPUDevice({ log = () => {} } = {}) {
   log('requesting WebGPU device…');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) throw new Error('no WebGPU adapter (use a WebGPU-capable browser)');
-  if (!adapter.features.has('subgroups')) throw new Error('GPU lacks the "subgroups" feature (needed by the fast GEMV kernels)');
+  if (!adapter.features.has('subgroups')) throw new Error('GPU lacks the required "subgroups" feature. The current fast WGSL kernels require subgroups and no fallback kernel set is bundled.');
   const dev = await adapter.requestDevice({
     requiredFeatures: ['subgroups'],
     requiredLimits: {
