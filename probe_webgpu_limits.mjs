@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 import http from 'http';
 const CANARY = '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary';
 
-// navigator.gpu only exists in a secure context (a real loaded page on localhost)
+// navigator.gpu only exists in a secure context (a loaded page on localhost)
 const server = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<!doctype html><html><body>probe</body></html>'); });
 await new Promise(r => server.listen(8011, r));
 

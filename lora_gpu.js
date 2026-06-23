@@ -32,8 +32,14 @@ export async function loadLoraAdapterGPU(dev, files, cfg) {
   const stFile = files.find(f => f.name.endsWith('.safetensors'));
   if (!stFile) throw new Error('no .safetensors in adapter files');
   const cfgFile = files.find(f => /adapter_config\.json|config\.json/.test(f.name));
-  let rankCfg = 16, alpha = null;
-  if (cfgFile) { const c = JSON.parse(await cfgFile.text()); rankCfg = c.r ?? c.rank ?? c.lora_rank ?? rankCfg; alpha = c.lora_alpha ?? c.alpha ?? null; }
+  let rankCfg = 16, scaleCfg = null;
+  if (cfgFile) {
+    const c = JSON.parse(await cfgFile.text()); const lp = c.lora_parameters || {};
+    rankCfg = c.r ?? c.rank ?? c.lora_rank ?? lp.rank ?? rankCfg;
+    if (lp.scale != null) scaleCfg = lp.scale;                       // MLX: scale is a direct multiplier
+    else if (c.lora_alpha != null) scaleCfg = c.lora_alpha / rankCfg; // PEFT: scale = alpha / rank
+    else if (c.alpha != null) scaleCfg = c.alpha / rankCfg;
+  }
 
   const st = parseSt(await stFile.arrayBuffer());
   const names = Object.keys(st.header).filter(k => k !== '__metadata__' && /lora_[abAB]/.test(k));
@@ -50,7 +56,7 @@ export async function loadLoraAdapterGPU(dev, files, cfg) {
     let Aarr = g.A.arr; if (g.A.shape[0] !== r) Aarr = transpose2d(g.A.arr, g.A.shape[0], g.A.shape[1]);
     // want B as [r, out]; PEFT lora_B is usually [out, r], transpose to [r, out]
     let Barr = g.B.arr; if (g.B.shape[0] !== r) Barr = transpose2d(g.B.arr, g.B.shape[0], g.B.shape[1]);
-    const scale = alpha ? alpha / r : 2.0;
+    const scale = scaleCfg != null ? scaleCfg : 2.0;
     modules[key] = { A: mk(Aarr), B: mk(Barr), rank: r, scale };
   }
   if (!Object.keys(modules).length) throw new Error('no LoRA modules matched layers.*.{self_attn,mlp}.*_proj');

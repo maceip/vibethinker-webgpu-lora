@@ -37,7 +37,7 @@ LiteRT.js (`@litertjs/tensor` unpublished + needs unbuilt `@ml_drift`).
 - `lora_gpu.js` — tf-free PEFT/MLX adapter → GPU buffers (A transposed [rank][in], B [rank][out]).
 - `main.js` + `index.html` — BYO-model app: load, LoRA dropdown (drag adapter files), triage.
 
-## Perf engineering (this session: 9.1 → 23.6 tok/s, all via measurement not guessing)
+## Perf engineering (this session: 9.1 → 35.4 tok/s, all via measurement not guessing)
 1. GEMV workgroup 256→64: each thread reads >1 word → memory-level parallelism.
    The dominant `g4:11008x2048` kernel went 68.5ms → 9.3ms (7.4×).
 2. LORA_A serial K-loop → parallel subgroup-reduction GEMV: LoRA path 2.6 → 23 tok/s (9×).
@@ -68,8 +68,6 @@ Requires: WebGPU + `subgroups` device feature. Tested in Chrome Canary
 (`--enable-unsafe-webgpu --use-angle=metal`) on M5 Max.
 
 ## Remaining headroom (optional)
-- App 23.6 vs GPU 33 tok/s: ~10ms/token JS (per-token tokenizer.decode + argmax mapAsync
-  sync). Could overlap argmax readback / decode off the hot path.
 - Prefill is sequential T=1 (~ctx × per-token); a batched prefill kernel would cut TTFT.
 - attnC combine runs 16 workgroups (low occupancy, ~4%); could fuse.
-- Wire a REAL trained triage adapter via the UI (lora_gpu.js parses PEFT/MLX; tested synthetic).
+- A live "checkpoint selector": the UI dropdown lists adapters; selecting one hot-swaps it live.

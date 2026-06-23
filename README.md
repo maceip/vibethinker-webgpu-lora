@@ -2,8 +2,10 @@
 <p align="center"><em>A 3-billion-parameter mind, running inside a browser tab. No server. No install. No upload. Just a page.</em></p>
 
 <p align="center">
-<b>~24 tokens/sec decode · live LoRA hot-swap · bit-exact to the reference · 100% client-side WebGPU</b>
+<b>~35 tokens/sec decode · live LoRA hot-swap · bit-exact to the reference · 100% client-side WebGPU</b>
 </p>
+
+<p align="center"><a href="https://maceip.github.io/emberglass/"><b>▶ Live demo</b></a> (bring your own model) · <a href="https://huggingface.co/macmacmacmac/emberglass">model card</a></p>
 
 ---
 
@@ -27,13 +29,13 @@ So we closed the gap by hand:
 - **Subgroup-reduction GEMV** tuned to the GPU's actual memory behavior — the single change that turned a sluggish kernel into a 7× faster one.
 - A **GPU-resident KV cache** and an in-shader RoPE that's free of the read/write race that quietly corrupts naïve implementations.
 
-Every one of those wins was found by **measuring** — nanosecond GPU timestamp profiling — not by guessing. The engine went from 9 tokens/sec to ~24 over one focused push, and every step is reproducible.
+Every one of those wins was found by **measuring** — nanosecond GPU timestamp profiling — not by guessing. The engine went from 9 tokens/sec to ~35 over one focused push, and every step is reproducible.
 
 ## The result
 
 | | |
 |---|---|
-| **Decode speed** | ~24 tok/s sustained across a full multi-thousand-token reasoning generation |
+| **Decode speed** | ~35 tok/s sustained across a full multi-thousand-token reasoning generation |
 | **Correctness** | argmax + every generated token **exact** vs the HuggingFace reference; bit-exact run-to-run |
 | **LoRA hot-swap** | load base once · swap adapters live · perfect restore on clear · no reload |
 | **Footprint** | one static HTML page; weights supplied by the visitor (BYO-model) |

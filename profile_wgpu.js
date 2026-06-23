@@ -1,5 +1,5 @@
 import { QwenWGPU } from './qwgpu/runtime.js';
-import { QWEN25_3B } from './qwen25.js';
+import { QWEN25_3B } from './config.js';
 window.run = async () => {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   const hasTS = adapter.features.has('timestamp-query');
@@ -13,7 +13,7 @@ window.run = async () => {
   // prime the KV cache with the prompt
   for (let p = 0; p < ids.length; p++) rt.token(ids[p], p);
   let nxt = await rt.argmaxLogits(); let pos = ids.length;
-  // warm up to a LONG context (~800) to profile the app's real decode regime
+  // warm up to a LONG context to profile the app's long-context decode regime
   const WARM = 3200; for (let s = 0; s < WARM; s++) { rt.token(nxt, pos); pos++; nxt = await rt.argmaxLogits(); }
   console.log('VWG profiling at ctx=' + pos);
 

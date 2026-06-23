@@ -1,6 +1,8 @@
 node_modules/
-model/
-*_bundle.js
-bundle.js
+model
+adapters_sel
+adapters_v1
+/*_bundle.js
+/bundle.js
 *.output
 .DS_Store

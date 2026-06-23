@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emberglass · a 3B model in a browser tab (WebGPU) + live LoRA hot-swap</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 0 auto; max-width: 960px; padding: 28px 20px 60px; background:#0b0c10; color:#e8e8ea; }
+  h1 { font-size: 34px; letter-spacing: .5px; margin: 0 0 2px; }
+  h1 .mark { color:#ff7a3c; }
+  .tag { color:#9aa4b2; font-size: 15px; margin: 0 0 18px; font-style: italic; }
+  h3 { margin: 26px 0 8px; font-size: 15px; color:#cdd3db; text-transform: uppercase; letter-spacing: .6px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  input[type=text]{ flex:1; min-width:320px; padding:7px 9px; background:#15171d; color:#e8e8ea; border:1px solid #2a2e38; border-radius:7px; }
+  textarea{ width:100%; box-sizing:border-box; background:#15171d; color:#e8e8ea; border:1px solid #2a2e38; border-radius:7px; padding:9px; font:13px ui-monospace,monospace; }
+  button{ padding:8px 15px; border-radius:7px; border:1px solid #45403a; background:linear-gradient(#33271f,#241c16); color:#ffd9c4; cursor:pointer; font-weight:600; }
+  button:disabled{ opacity:.45; cursor:default; }
+  select{ padding:7px; background:#15171d; color:#e8e8ea; border:1px solid #2a2e38; border-radius:7px; }
+  code{ background:#15171d; padding:1px 5px; border-radius:4px; border:1px solid #23262e; }
+  #status{ font-size:13px; color:#7fb2ff; margin:10px 0; white-space:pre-wrap; }
+  #out{ background:#0d1410; border:1px solid #233019; border-radius:7px; padding:12px; white-space:pre-wrap; font:13px ui-monospace,monospace; min-height:120px; }
+  .stats{ display:flex; gap:18px; flex-wrap:wrap; margin:14px 0; }
+  .stat{ background:#121419; border:1px solid #23262e; border-radius:9px; padding:10px 14px; }
+  .stat b{ display:block; font-size:20px; color:#ff8a52; }
+  .stat span{ font-size:12px; color:#9aa4b2; }
+  .banner{ background:#1c1206; border:1px solid #4a3a1c; border-radius:9px; padding:12px 14px; font-size:13px; margin:14px 0; color:#e8dcc8; }
+  a{ color:#ff9a64; }
+  .foot{ margin-top:34px; color:#6b7280; font-size:12px; }
+</style>
+</head>
+<body>
+<h1><span class="mark">🜂</span> Emberglass</h1>
+<p class="tag">A 3-billion-parameter mind, running inside this browser tab. No server. No install. No upload.</p>
+
+<div class="stats">
+  <div class="stat"><b>~35</b><span>tokens / sec decode</span></div>
+  <div class="stat"><b>live</b><span>LoRA hot-swap</span></div>
+  <div class="stat"><b>bit-exact</b><span>vs the reference</span></div>
+  <div class="stat"><b>100%</b><span>client-side WebGPU</span></div>
+</div>
+
+<p>Emberglass runs a fine-tuned <b>Qwen2.5-3B</b> reasoning model entirely on your own GPU, from a single static page, in hand-written WebGPU compute shaders. It thinks for thousands of tokens and streams a verdict — and nothing ever leaves your device. You can swap the model's specialization <b>live</b> by hot-swapping a LoRA adapter: the base loads once and never moves. Code: <a href="https://github.com/maceip/emberglass">github.com/maceip/emberglass</a>.</p>
+
+<div class="banner">
+  <b>Bring your own model.</b> This page is the engine — it hosts no multi-GB weights. To run it: serve a Qwen2.5-3B checkpoint from the <i>same origin</i> as this page (clone the repo, drop the model in <code>./model</code>, <code>npx http-server</code>), then set the model URL below and press <b>Load</b>. Needs a browser exposing WebGPU with the <code>subgroups</code> feature (Chrome 128+ / Canary). Drag in a PEFT/MLX LoRA adapter to hot-swap a specialization.
+</div>
+
+<div class="row">
+  <input id="modelUrl" type="text" value="/model">
+  <button id="load">Load model</button>
+</div>
+<div id="status">idle — supply a same-origin Qwen2.5-3B and press Load.</div>
+
+<h3>LoRA adapter (optional)</h3>
+<div class="row">
+  <select id="adapter"><option value="none">none (base)</option></select>
+  <input id="loraFile" type="file" multiple disabled accept=".safetensors,.json">
+  <span style="color:#9aa4b2;font-size:12px">drop adapter_config.json + adapters.safetensors → appears in dropdown → Triage to hot-swap live</span>
+</div>
+
+<h3>Researcher submission</h3>
+<textarea id="report" rows="8">Title: IDOR: download any user's invoice PDF via sequential id
+Asset: api.example.com. GET /api/v1/invoices/{id}/pdf returns any invoice with no ownership check; ids are sequential. Decrementing id returns other customers' invoice PDFs (PII). PoCs + raw HTTP requests with only my own session cookie attached.</textarea>
+<div class="row"><button id="go" disabled>Triage</button></div>
+
+<h3>Output</h3>
+<div id="out">—</div>
+
+<p class="foot">Built the hard way, on purpose. 🜂 &nbsp;·&nbsp; <a href="https://github.com/maceip/emberglass">source</a> · <a href="https://huggingface.co/macmacmacmac/emberglass">model card</a></p>
+
+<script type="module" src="./bundle.js"></script>
+</body>
+</html>

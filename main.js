@@ -3,7 +3,7 @@
 // LoRA adapter hot-swap (no base reload). BYO model: served under /model/.
 import { AutoTokenizer, env } from '@huggingface/transformers';
 import { QwenWGPU } from './qwgpu/runtime.js';
-import { QWEN25_3B } from './qwen25.js';
+import { QWEN25_3B } from './config.js';
 import { loadLoraAdapterGPU } from './lora_gpu.js';
 
 const $ = id => document.getElementById(id);

@@ -16,7 +16,7 @@ const ref = JSON.parse(fs.readFileSync('ref.json')); const ids = ref.ids;
 console.log('loading f32 weights…');
 const weights = await loadModelWeights(reader);
 
-// quantize+dequant each projection weight in place (simulate int8 inference)
+// quantize+dequant each projection weight in place (int8 round-trip)
 const suffixes = ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.o_proj', 'mlp.gate_proj', 'mlp.up_proj', 'mlp.down_proj'];
 let worstRms = 0;
 for (let i = 0; i < QWEN25_3B.numLayers; i++) {
