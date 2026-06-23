@@ -35506,7 +35506,7 @@ var<workgroup> bv: array<f32,256>; var<workgroup> bi: array<u32,256>;
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; var v = -1e30; var idx = 0xffffffffu;
-  for (var i = tid; i < n; i = i + 256u) { let x = logits[i]; if (x > v || (x == v && i < idx)) { v = x; idx = i; } }
+  for (var i = tid; i < n; i = i + 256u) { let x = logits[i]; if (x == x && (x > v || (x == v && i < idx))) { v = x; idx = i; } }
   bv[tid] = v; bi[tid] = idx; workgroupBarrier();
   for (var s = 128u; s > 0u; s = s/2u) { if (tid < s) { let ov = bv[tid+s]; let oi = bi[tid+s]; if (ov > bv[tid] || (ov == bv[tid] && oi < bi[tid])) { bv[tid] = ov; bi[tid] = oi; } } workgroupBarrier(); }
   if (tid == 0u) { out[0] = bi[0]; }
@@ -35527,7 +35527,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   var v = -1e30; var idx = 0xffffffffu;
   for (var i = tid; i < n; i = i + 256u) {
     let x = logits[i];
-    if (!alreadySelected(i, selected) && (x > v || (x == v && i < idx))) { v = x; idx = i; }
+    if (x == x && !alreadySelected(i, selected) && (x > v || (x == v && i < idx))) { v = x; idx = i; }
   }
   bv[tid] = v; bi[tid] = idx; workgroupBarrier();
   for (var s = 128u; s > 0u; s = s/2u) {
@@ -35538,6 +35538,131 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     workgroupBarrier();
   }
   if (tid == 0u) { ids[selected] = bi[0]; vals[selected] = bv[0]; }
+}`;
+var TOPK_LOCAL = `
+struct Meta { vocabSize:u32, k:u32, tileSize:u32, pad:u32 };
+@group(0) @binding(0) var<storage,read> logits: array<f32>;
+@group(0) @binding(1) var<storage,read_write> localIds: array<u32>;
+@group(0) @binding(2) var<storage,read_write> localVals: array<f32>;
+@group(0) @binding(3) var<uniform> m: Meta;
+var<workgroup> rawVals: array<f32,256>;
+var<workgroup> rawIds: array<u32,256>;
+var<workgroup> bv: array<f32,256>;
+var<workgroup> bi: array<u32,256>;
+var<workgroup> picked: array<u32,64>;
+
+fn better(av: f32, ai: u32, bv_: f32, bi_: u32) -> bool {
+  return av > bv_ || (av == bv_ && ai < bi_);
+}
+
+fn selected(id: u32, n: u32) -> bool {
+  for (var j = 0u; j < n; j = j + 1u) {
+    if (picked[j] == id) { return true; }
+  }
+  return false;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let tid = lid.x;
+  let i = wid.x * m.tileSize + tid;
+  var v = -1e30;
+  var idx = 0xffffffffu;
+  if (i < m.vocabSize) {
+    let x = logits[i];
+    if (x == x) {
+      v = x;
+      idx = i;
+    }
+  }
+  rawVals[tid] = v;
+  rawIds[tid] = idx;
+  workgroupBarrier();
+
+  for (var rank = 0u; rank < 64u; rank = rank + 1u) {
+    if (rank >= m.k) { break; }
+    var tv = rawVals[tid];
+    var ti = rawIds[tid];
+    if (ti == 0xffffffffu || selected(ti, rank)) {
+      tv = -1e30;
+      ti = 0xffffffffu;
+    }
+    bv[tid] = tv;
+    bi[tid] = ti;
+    workgroupBarrier();
+    for (var s = 128u; s > 0u; s = s / 2u) {
+      if (tid < s) {
+        let ov = bv[tid + s];
+        let oi = bi[tid + s];
+        if (better(ov, oi, bv[tid], bi[tid])) {
+          bv[tid] = ov;
+          bi[tid] = oi;
+        }
+      }
+      workgroupBarrier();
+    }
+    if (tid == 0u) {
+      picked[rank] = bi[0];
+      let out = wid.x * m.k + rank;
+      localIds[out] = bi[0];
+      localVals[out] = bv[0];
+    }
+    workgroupBarrier();
+  }
+}`;
+var TOPK_MERGE_SELECT = `
+@group(0) @binding(0) var<storage,read> localIds: array<u32>;
+@group(0) @binding(1) var<storage,read> localVals: array<f32>;
+@group(0) @binding(2) var<storage,read_write> ids: array<u32>;
+@group(0) @binding(3) var<storage,read_write> vals: array<f32>;
+@group(0) @binding(4) var<uniform> m: vec2<u32>; // candidateCount, selectedCount
+var<workgroup> bv: array<f32,256>;
+var<workgroup> bi: array<u32,256>;
+
+fn alreadySelected(id: u32, n: u32) -> bool {
+  for (var j = 0u; j < n; j = j + 1u) {
+    if (ids[j] == id) { return true; }
+  }
+  return false;
+}
+
+fn better(av: f32, ai: u32, bv_: f32, bi_: u32) -> bool {
+  return av > bv_ || (av == bv_ && ai < bi_);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let tid = lid.x;
+  let n = m.x;
+  let selected = m.y;
+  var v = -1e30;
+  var idx = 0xffffffffu;
+  for (var i = tid; i < n; i = i + 256u) {
+    let id = localIds[i];
+    let x = localVals[i];
+    if (id != 0xffffffffu && !alreadySelected(id, selected) && x == x && better(x, id, v, idx)) {
+      v = x;
+      idx = id;
+    }
+  }
+  bv[tid] = v;
+  bi[tid] = idx;
+  workgroupBarrier();
+  for (var s = 128u; s > 0u; s = s / 2u) {
+    if (tid < s) {
+      let ov = bv[tid + s];
+      let oi = bi[tid + s];
+      if (better(ov, oi, bv[tid], bi[tid])) {
+        bv[tid] = ov;
+        bi[tid] = oi;
+      }
+    }
+    workgroupBarrier();
+  }
+  if (tid == 0u) {
+    ids[selected] = bi[0];
+    vals[selected] = bv[0];
+  }
 }`;
 var GEMV4 = `
 enable subgroups;
@@ -36065,6 +36190,8 @@ var GPUBufferPool = class {
 // src/qwgpu/runtime.js
 var STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
 var UNIFORM = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+var TOPK_TILE_SIZE = 256;
+var TOPK_TWO_STAGE_LIMIT = 64;
 var QwenWGPU = class {
   // opts: { maxCtx, maxPrefillT, decodeBatchSize, samplingTopK } — context
   // window + batched-prefill cap (default 8192 each; KV cache grows linearly).
@@ -36153,6 +36280,8 @@ var QwenWGPU = class {
       qkvGemv4: this._pipe(QKV_GEMV4),
       gateUpSiluGemv4: this._pipe(GATE_UP_SILU_GEMV4),
       topkSelect: this._pipe(TOPK_SELECT),
+      topkLocal: this._pipe(TOPK_LOCAL),
+      topkMergeSelect: this._pipe(TOPK_MERGE_SELECT),
       gemm4: this._pipe(GEMM4),
       gemm4AddT: this._pipe(GEMM4_ADD_T),
       rmsT: this._pipe(RMSNORM_T),
@@ -36195,6 +36324,8 @@ var QwenWGPU = class {
     }
     const H = c.hiddenSize, qd = c.numHeads * c.headDim, kvd = c.numKVHeads * c.headDim, I = c.intermediateSize;
     const NSPLITMAX = Math.ceil(this.maxCtx / this.CHUNK);
+    this.topKBlocks = Math.ceil(c.vocabSize / TOPK_TILE_SIZE);
+    this.topKTwoStageK = Math.min(this.maxSamplingTopK, TOPK_TWO_STAGE_LIMIT);
     this.s = {
       hidden: this._buf(H * 4),
       normed: this._buf(H * 4),
@@ -36214,7 +36345,9 @@ var QwenWGPU = class {
       po: this._buf(c.numHeads * NSPLITMAX * c.headDim * 4),
       idsBuf: this._buf(this.decodeBatchCapacity * 4),
       sampleIds: this._buf(this.maxSamplingTopK * 4),
-      sampleVals: this._buf(this.maxSamplingTopK * 4)
+      sampleVals: this._buf(this.maxSamplingTopK * 4),
+      topkLocalIds: this._buf(this.topKBlocks * this.topKTwoStageK * 4),
+      topkLocalVals: this._buf(this.topKBlocks * this.topKTwoStageK * 4)
     };
     this.idsRead = this._buf(this.decodeBatchCapacity * 4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
     this.argmaxRead = this._buf(4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
@@ -36243,6 +36376,8 @@ var QwenWGPU = class {
     this.decodeBatchMaxLatencyMs = Number(opts.decodeBatchMaxLatencyMs ?? 250);
     this.samplingTopK = Math.max(1, Math.floor(Number(opts.samplingTopK ?? 40)));
     this.maxSamplingTopK = Math.max(this.samplingTopK, Math.floor(Number(opts.maxSamplingTopK ?? 64)));
+    this.topKAlgorithm = String(opts.topKAlgorithm ?? "auto").toLowerCase();
+    if (!["auto", "repeated", "two-stage"].includes(this.topKAlgorithm)) throw new Error(`unsupported topKAlgorithm ${opts.topKAlgorithm}`);
     this.decodeBatchTuning = { selected: this.MAXBATCH, candidates: [], reason: this.decodeBatchMode === "auto" ? "pending" : "fixed" };
   }
   _buildRope(maxSeq) {
@@ -36289,6 +36424,7 @@ var QwenWGPU = class {
       const w = this._buf(wBytes);
       const scale = this._buf(scaleBytes);
       const bias = this._buf(biasBytes);
+      enc.clearBuffer(bias);
       let wOff = 0, sOff = 0, bOff = 0;
       for (const part of [L.q, L.k, L.v]) {
         const qq = this.q4[part.weight];
@@ -36673,16 +36809,25 @@ var QwenWGPU = class {
       this._argmaxReadBusy = false;
     }
   }
-  async topKLogits(k2 = this.samplingTopK) {
+  _clampTopK(k2) {
+    return Math.min(Math.max(1, Math.floor(k2)), this.maxSamplingTopK, this.cfg.vocabSize);
+  }
+  _canUseTwoStageTopK(k2) {
+    return !!this.s?.topkLocalIds && k2 <= this.topKTwoStageK;
+  }
+  _shouldUseTwoStageTopK(k2) {
+    if (this.topKAlgorithm === "repeated") return false;
+    if (!this._canUseTwoStageTopK(k2)) return false;
+    if (this.topKAlgorithm === "two-stage") return true;
+    return k2 >= 8;
+  }
+  async _runTopK(k2, encode) {
     if (this._topKReadBusy) throw new Error("topKLogits() is already in flight; concurrent sampling is not supported");
     this._topKReadBusy = true;
     try {
-      k2 = Math.min(Math.max(1, Math.floor(k2)), this.maxSamplingTopK, this.cfg.vocabSize);
+      this.lastDispatchCount = 0;
       const enc = this.dev.createCommandEncoder();
-      for (let i = 0; i < k2; i++) {
-        const u = this._staticUni(`topk:${this.cfg.vocabSize}:${i}`, new Uint32Array([this.cfg.vocabSize, i]));
-        this._dispatch(enc, this.pipes.topkSelect, this._bgCached(this.pipes.topkSelect, [this.s.logits, this.s.sampleIds, this.s.sampleVals, u], `topk:${i}`), 1, 1, "topk");
-      }
+      encode(enc, k2);
       enc.copyBufferToBuffer(this.s.sampleIds, 0, this.sampleIdsRead, 0, k2 * 4);
       enc.copyBufferToBuffer(this.s.sampleVals, 0, this.sampleValsRead, 0, k2 * 4);
       this.dev.queue.submit([enc.finish()]);
@@ -36695,6 +36840,49 @@ var QwenWGPU = class {
       if (this.sampleValsRead.mapState !== "unmapped") this.sampleValsRead.unmap();
       this._topKReadBusy = false;
     }
+  }
+  _encodeTopKRepeated(enc, k2) {
+    for (let i = 0; i < k2; i++) {
+      const u = this._staticUni(`topk:${this.cfg.vocabSize}:${i}`, new Uint32Array([this.cfg.vocabSize, i]));
+      this._dispatch(enc, this.pipes.topkSelect, this._bgCached(this.pipes.topkSelect, [this.s.logits, this.s.sampleIds, this.s.sampleVals, u], `topk:${i}`), 1, 1, "topk:repeated");
+    }
+  }
+  _encodeTopKTwoStage(enc, k2) {
+    if (!this._canUseTwoStageTopK(k2)) throw new Error(`two-stage top-k supports k <= ${this.topKTwoStageK}; got ${k2}`);
+    const localMeta = this._staticUni(`topkLocal:${this.cfg.vocabSize}:${k2}:${TOPK_TILE_SIZE}`, new Uint32Array([this.cfg.vocabSize, k2, TOPK_TILE_SIZE, 0]));
+    this._dispatch(
+      enc,
+      this.pipes.topkLocal,
+      this._bgCached(this.pipes.topkLocal, [this.s.logits, this.s.topkLocalIds, this.s.topkLocalVals, localMeta], `topkLocal:${k2}`),
+      this.topKBlocks,
+      1,
+      "topk:local"
+    );
+    const candidateCount = this.topKBlocks * k2;
+    for (let i = 0; i < k2; i++) {
+      const u = this._staticUni(`topkMerge:${candidateCount}:${i}`, new Uint32Array([candidateCount, i]));
+      this._dispatch(
+        enc,
+        this.pipes.topkMergeSelect,
+        this._bgCached(this.pipes.topkMergeSelect, [this.s.topkLocalIds, this.s.topkLocalVals, this.s.sampleIds, this.s.sampleVals, u], `topkMerge:${candidateCount}:${i}`),
+        1,
+        1,
+        "topk:merge"
+      );
+    }
+  }
+  async topKLogitsRepeated(k2 = this.samplingTopK) {
+    k2 = this._clampTopK(k2);
+    return await this._runTopK(k2, (enc, kk) => this._encodeTopKRepeated(enc, kk));
+  }
+  async topKLogitsTwoStage(k2 = this.samplingTopK) {
+    k2 = this._clampTopK(k2);
+    return await this._runTopK(k2, (enc, kk) => this._encodeTopKTwoStage(enc, kk));
+  }
+  async topKLogits(k2 = this.samplingTopK) {
+    k2 = this._clampTopK(k2);
+    if (this._shouldUseTwoStageTopK(k2)) return await this.topKLogitsTwoStage(k2);
+    return await this.topKLogitsRepeated(k2);
   }
   // Run one token end-to-end (embed + step) and submit.
   token(id, pos) {
