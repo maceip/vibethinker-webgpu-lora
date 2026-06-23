@@ -20,12 +20,17 @@ window.run = async () => {
   };
 
   const rbuf = dev.createBuffer({ size: cfg.vocabSize * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const logits = async () => {
-    for (let p = 0; p < ids.length; p++) rt.token(ids[p], p);
+  const readCurrentLogits = async () => {
     const enc = dev.createCommandEncoder(); enc.copyBufferToBuffer(rt.s.logits, 0, rbuf, 0, cfg.vocabSize * 4); dev.queue.submit([enc.finish()]);
     await rbuf.mapAsync(GPUMapMode.READ); const a = new Float32Array(rbuf.getMappedRange()).slice(); rbuf.unmap(); return a;
   };
+  const logits = async () => {
+    for (let p = 0; p < ids.length; p++) rt.token(ids[p], p);
+    return await readCurrentLogits();
+  };
   const maxAbsDiff = (a, b) => { let m = 0; for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(a[i] - b[i])); return m; };
+  const finite = (a) => { for (let i = 0; i < a.length; i++) if (!Number.isFinite(a[i])) return false; return true; };
+  const decodeN = async (pos, n) => { let out = [await rt.argmaxLogits()]; while (out.length < n) { const b = await rt.decodeBatch(pos, Math.min(rt.MAXBATCH, n - out.length)); pos += b.length; out.push(...b); } return out.slice(0, n); };
 
   const selA = await loadLoraAdapterGPU(dev, await fetchAdapter('adapters_sel'), cfg);
   const v1A = await loadLoraAdapterGPU(dev, await fetchAdapter('adapters_v1'), cfg);
@@ -49,6 +54,18 @@ window.run = async () => {
   ];
   let pass = 0; for (const [n, ok] of checks) { console.log('VWG ' + (ok ? 'PASS' : 'FAIL') + '  ' + n); if (ok) pass++; }
   console.log('VWG LORA-HOTSWAP ' + (pass === checks.length ? 'ALL PASS (' + pass + '/' + checks.length + ')' : 'FAILED ' + pass + '/' + checks.length));
+
+  // Active-LoRA batched prefill must match the current proven sequential adapter path.
+  rt.setLora(selA);
+  for (let p = 0; p < ids.length; p++) rt.token(ids[p], p);
+  const seqLogits = await readCurrentLogits(); const seqGen = await decodeN(ids.length, 6);
+  rt.setLora(selA);
+  rt.prefillBatch(ids);
+  const batLogits = await readCurrentLogits(); const batGen = await decodeN(ids.length, 6);
+  const prefillDelta = maxAbsDiff(seqLogits, batLogits);
+  const prefillOk = finite(batLogits) && seqGen[0] === batGen[0] && JSON.stringify(seqGen) === JSON.stringify(batGen);
+  console.log(`VWG LoRA prefill seq=${JSON.stringify(seqGen)} batched=${JSON.stringify(batGen)} logitΔ=${prefillDelta.toFixed(3)}`);
+  console.log('VWG ' + (prefillOk ? 'PASS' : 'FAIL') + '  LoRA batched prefill matches sequential generation');
 
   // decode speed with the adapter active (greedy batched path)
   rt.setLora(selA); await dev.queue.onSubmittedWorkDone();

@@ -73,9 +73,9 @@ async function* generate(messages, { maxTokens = 1024, temperature = 0.0, stopId
   try { promptText = tokenizer.apply_chat_template(messages, { tokenize: false, add_generation_prompt: true }); }
   catch { promptText = chatML(messages); }
   const ids = tokenizer.encode(promptText);
-  // prefill: batched (tiled GEMM, fast TTFT) for base model; sequential when a LoRA
-  // adapter is active (batched-prefill path is base-only) or the prompt exceeds maxPrefillT.
-  if (!rt.lora && ids.length <= rt.maxPrefillT) rt.prefillBatch(ids);
+  // prefill: batched tiled GEMM fast path, with LoRA deltas fused after each projection
+  // when an adapter is active; sequential fallback only for prompts above maxPrefillT.
+  if (ids.length <= rt.maxPrefillT) rt.prefillBatch(ids);
   else for (let p = 0; p < ids.length; p++) rt.token(ids[p], p);
   let pos = ids.length;
   const emit = (id) => tokenizer.decode([id], { skip_special_tokens: true }); // byte-level BPE: per-token decode is exact for ASCII/JSON

@@ -3,7 +3,7 @@
 // buffers consumed by the GEMV kernel). No tf.js → no per-op dispatch overhead.
 //
 // Correctness is validated against the tf.js forward (which == HuggingFace).
-import { GEMV, GEMV4, LORA_A, RMSNORM, ROPE, ATTN_PARTIAL, ATTN_COMBINE, ADD, SILUMUL, EMBED, EMBED_BUF, ARGMAX,
+import { GEMV, GEMV4, LORA_A, LORA_A_BATCH, LORA_B_ADD_T, RMSNORM, ROPE, ATTN_PARTIAL, ATTN_COMBINE, ADD, SILUMUL, EMBED, EMBED_BUF, ARGMAX,
   GEMM4, RMSNORM_T, ROPE_T, EMBED_T, ATTN_PREFILL } from './kernels.js';
 import { createQwenSchema } from './model_schema.js';
 import { streamSafetensors } from './safetensors_loader.js';
@@ -40,7 +40,7 @@ export class QwenWGPU {
     this.CHUNK = 128; this.MAXBATCH = 16;
     this.maxCtx = this.opts.maxCtx || 8192;                       // context window (KV cache length)
     this.maxPrefillT = Math.min(this.opts.maxPrefillT || 8192, this.maxCtx); // batched-prefill cap (<= ctx)
-    this.pipes = { gemv: this._pipe(GEMV), loraA: this._pipe(LORA_A), rms: this._pipe(RMSNORM), rope: this._pipe(ROPE), attnP: this._pipe(ATTN_PARTIAL), attnC: this._pipe(ATTN_COMBINE), add: this._pipe(ADD), silu: this._pipe(SILUMUL), embed: this._pipe(EMBED), embedBuf: this._pipe(EMBED_BUF), argmax: this._pipe(ARGMAX), gemv4: this._pipe(GEMV4),
+    this.pipes = { gemv: this._pipe(GEMV), loraA: this._pipe(LORA_A), loraABatch: this._pipe(LORA_A_BATCH), loraBAddT: this._pipe(LORA_B_ADD_T), rms: this._pipe(RMSNORM), rope: this._pipe(ROPE), attnP: this._pipe(ATTN_PARTIAL), attnC: this._pipe(ATTN_COMBINE), add: this._pipe(ADD), silu: this._pipe(SILUMUL), embed: this._pipe(EMBED), embedBuf: this._pipe(EMBED_BUF), argmax: this._pipe(ARGMAX), gemv4: this._pipe(GEMV4),
       gemm4: this._pipe(GEMM4), rmsT: this._pipe(RMSNORM_T), ropeT: this._pipe(ROPE_T), embedT: this._pipe(EMBED_T), attnPrefill: this._pipe(ATTN_PREFILL) };
     onProgress('streaming + quantizing weights', 0);
     this.schema = createQwenSchema(c);
@@ -277,12 +277,24 @@ export class QwenWGPU {
     return ids;
   }
 
-  // ---- PREFILL (T>1): process the whole prompt at once via tiled GEMM. Base model
-  // only (no LoRA — caller falls back to sequential token() when an adapter is active).
-  gemm4(enc, aBuf, q, yBuf, T, biasBuf) {
+  // ---- PREFILL (T>1): process the whole prompt at once via tiled GEMM. If a LoRA
+  // adapter has the projection module, add its batched delta immediately after base GEMM.
+  gemm4(enc, aBuf, q, yBuf, T, biasBuf, moduleKey) {
     const meta = new Uint32Array([q.K, q.N, T, q.gpr, biasBuf ? 1 : 0, 0, 0, 0]);
     const bg = this._bg(this.pipes.gemm4, [aBuf, q.w, q.scale, biasBuf || this.s.dummy, yBuf, this._uni(meta)]);
     this._dispatch(enc, this.pipes.gemm4, bg, Math.ceil(q.N / 64), Math.ceil(T / 16), 'gemm4');
+    const mod = this.lora?.modules?.[moduleKey];
+    if (mod) this.loraBatchDelta(enc, aBuf, yBuf, q, T, mod);
+  }
+  loraBatchDelta(enc, xBuf, yBuf, q, T, mod) {
+    const bgA = this._bg(this.pipes.loraABatch, [xBuf, mod.A, this.sT.loraD, this._uni(new Uint32Array([q.K, mod.rank, T, 0]))]);
+    this._dispatch(enc, this.pipes.loraABatch, bgA, mod.rank, T, 'loraA:T');
+    const meta = new ArrayBuffer(32); const dv = new DataView(meta);
+    dv.setUint32(0, T, true); dv.setUint32(4, q.N, true); dv.setUint32(8, mod.rank, true); dv.setUint32(12, 0, true);
+    dv.setFloat32(16, mod.scale, true);
+    const groups = Math.min(Math.ceil((T * q.N) / 256), 65535);
+    const bgB = this._bg(this.pipes.loraBAddT, [this.sT.loraD, mod.B, yBuf, this._uni(new Uint8Array(meta))]);
+    this._dispatch(enc, this.pipes.loraBAddT, bgB, groups, 1, 'loraB:T');
   }
   rmsT(enc, xBuf, gBuf, yBuf, T, K) {
     const u = new ArrayBuffer(8); const dv = new DataView(u); dv.setFloat32(0, K, true); dv.setFloat32(4, this.cfg.rmsNormEps, true);
@@ -298,24 +310,33 @@ export class QwenWGPU {
   }
 
   // (re)allocate prefill scratch sized to T (grows as needed; only paid when prefilling).
-  _ensurePrefillScratch(T) {
-    if (this.sTcap >= T) return;
+  _ensurePrefillScratch(T, loraRank = 0) {
+    if (this.sTcap >= T && (this.sTLoraRank || 0) >= loraRank) return;
     if (this.sT) for (const k in this.sT) this.sT[k].destroy();
     const c = this.cfg, H = c.hiddenSize, qd = c.numHeads * c.headDim, kvd = c.numKVHeads * c.headDim, I = c.intermediateSize;
     this.sT = {
       hidden: this._buf(T * H * 4), normed: this._buf(T * H * 4), q: this._buf(T * qd * 4), k: this._buf(T * kvd * 4), v: this._buf(T * kvd * 4),
       attn: this._buf(T * qd * 4), tmp: this._buf(T * I * 4), tmp2: this._buf(T * I * 4), ids: this._buf(T * 4),
+      loraD: this._buf(Math.max(1, T * Math.max(1, loraRank)) * 4),
     };
-    this.sTcap = T;
+    this.sTcap = T; this.sTLoraRank = loraRank;
+  }
+
+  _activeMaxLoraRank() {
+    let rank = 0;
+    const mods = this.lora?.modules;
+    if (!mods) return 0;
+    for (const key of Object.keys(mods)) rank = Math.max(rank, mods[key].rank || 0);
+    return rank;
   }
 
   // Prefill the prompt (positions 0..T-1). Leaves last-row logits in s.logits and the
-  // KV cache populated, so decode continues from pos=T. T must be <= maxPrefillT and no LoRA.
+  // KV cache populated, so decode continues from pos=T. T must be <= maxPrefillT.
   prefillBatch(ids) {
     const c = this.cfg, S = this.s, T = ids.length, hd = c.headDim, kvd = c.numKVHeads * hd, H = c.hiddenSize;
     if (T > this.maxPrefillT) throw new Error(`prompt ${T} > maxPrefillT ${this.maxPrefillT}`);
     if (T > this.maxCtx) throw new Error(`prompt ${T} > maxCtx ${this.maxCtx}`);
-    this._ensurePrefillScratch(T); const ST = this.sT;
+    this._ensurePrefillScratch(T, this._activeMaxLoraRank()); const ST = this.sT;
     this._resetUni();
     this.dev.queue.writeBuffer(ST.ids, 0, new Uint32Array(ids));
     const enc = this.dev.createCommandEncoder();
@@ -324,20 +345,20 @@ export class QwenWGPU {
     for (let i = 0; i < c.numLayers; i++) {
       const p = `model.layers.${i}`;
       this.rmsT(enc, ST.hidden, this.bufs[`${p}.input_layernorm.weight`], ST.normed, T, H);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.q_proj.weight`], ST.q, T, this.bufs[`${p}.self_attn.q_proj.bias`]);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.k_proj.weight`], ST.k, T, this.bufs[`${p}.self_attn.k_proj.bias`]);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.v_proj.weight`], ST.v, T, this.bufs[`${p}.self_attn.v_proj.bias`]);
+      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.q_proj.weight`], ST.q, T, this.bufs[`${p}.self_attn.q_proj.bias`], `layers.${i}.self_attn.q_proj`);
+      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.k_proj.weight`], ST.k, T, this.bufs[`${p}.self_attn.k_proj.bias`], `layers.${i}.self_attn.k_proj`);
+      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.v_proj.weight`], ST.v, T, this.bufs[`${p}.self_attn.v_proj.bias`], `layers.${i}.self_attn.v_proj`);
       this.ropeT(enc, ST.q, T, c.numHeads); this.ropeT(enc, ST.k, T, c.numKVHeads);
       enc.copyBufferToBuffer(ST.k, 0, this.kc[i], 0, T * kvd * 4);
       enc.copyBufferToBuffer(ST.v, 0, this.vc[i], 0, T * kvd * 4);
       this.attnPrefill(enc, ST.q, this.kc[i], this.vc[i], ST.attn, T);
-      this.gemm4(enc, ST.attn, this.q4[`${p}.self_attn.o_proj.weight`], ST.tmp, T, null);
+      this.gemm4(enc, ST.attn, this.q4[`${p}.self_attn.o_proj.weight`], ST.tmp, T, null, `layers.${i}.self_attn.o_proj`);
       this._addInto(enc, ST.hidden, ST.tmp, T * H);
       this.rmsT(enc, ST.hidden, this.bufs[`${p}.post_attention_layernorm.weight`], ST.normed, T, H);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.mlp.gate_proj.weight`], ST.tmp, T, null);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.mlp.up_proj.weight`], ST.tmp2, T, null);
+      this.gemm4(enc, ST.normed, this.q4[`${p}.mlp.gate_proj.weight`], ST.tmp, T, null, `layers.${i}.mlp.gate_proj`);
+      this.gemm4(enc, ST.normed, this.q4[`${p}.mlp.up_proj.weight`], ST.tmp2, T, null, `layers.${i}.mlp.up_proj`);
       this._siluMul(enc, ST.tmp, ST.tmp2, T * c.intermediateSize);
-      this.gemm4(enc, ST.tmp, this.q4[`${p}.mlp.down_proj.weight`], ST.normed, T, null);
+      this.gemm4(enc, ST.tmp, this.q4[`${p}.mlp.down_proj.weight`], ST.normed, T, null, `layers.${i}.mlp.down_proj`);
       this._addInto(enc, ST.hidden, ST.normed, T * H);
     }
     // last row -> final norm -> lm_head (reuse decode single-row kernels)
