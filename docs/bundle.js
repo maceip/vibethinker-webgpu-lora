@@ -35390,6 +35390,95 @@ var ModelUploader = class {
   }
 };
 
+// src/qwgpu/buffer_pool.js
+var GPUBufferPool = class {
+  constructor(device, { cacheBindGroups = true } = {}) {
+    this.dev = device;
+    this.cacheBindGroups = cacheBindGroups;
+    this.uniformPool = [];
+    this.uniformIdx = 0;
+    this.staticUniforms = /* @__PURE__ */ new Map();
+    this.bindGroups = /* @__PURE__ */ new Map();
+    this.sensitiveBindGroups = /* @__PURE__ */ new Set();
+    this.bufferIds = /* @__PURE__ */ new WeakMap();
+    this.pipelineIds = /* @__PURE__ */ new WeakMap();
+    this.nextBufferId = 1;
+    this.nextPipelineId = 1;
+  }
+  buffer(size, usage) {
+    return this.dev.createBuffer({ size, usage });
+  }
+  uploadF32(arr, usage) {
+    const b = this.buffer(arr.byteLength, usage);
+    this.dev.queue.writeBuffer(b, 0, arr);
+    return b;
+  }
+  uploadU32(arr, usage) {
+    const b = this.buffer(arr.byteLength, usage);
+    this.dev.queue.writeBuffer(b, 0, arr);
+    return b;
+  }
+  dynamicUniform(arr, usage) {
+    let b = this.uniformPool[this.uniformIdx];
+    if (!b) {
+      b = this.buffer(32, usage);
+      this.uniformPool[this.uniformIdx] = b;
+    }
+    this.uniformIdx++;
+    this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
+    return b;
+  }
+  resetUniforms() {
+    this.uniformIdx = 0;
+  }
+  staticUniform(key, arr, usage) {
+    let b = this.staticUniforms.get(key);
+    if (!b) {
+      b = this.buffer(32, usage);
+      this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
+      this.staticUniforms.set(key, b);
+    }
+    return b;
+  }
+  idForBuffer(buffer) {
+    let id = this.bufferIds.get(buffer);
+    if (!id) {
+      id = this.nextBufferId++;
+      this.bufferIds.set(buffer, id);
+    }
+    return id;
+  }
+  idForPipeline(pipe) {
+    let id = this.pipelineIds.get(pipe);
+    if (!id) {
+      id = this.nextPipelineId++;
+      this.pipelineIds.set(pipe, id);
+    }
+    return id;
+  }
+  uncachedBindGroup(pipe, buffers) {
+    return this.dev.createBindGroup({
+      layout: pipe.getBindGroupLayout(0),
+      entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } }))
+    });
+  }
+  cachedBindGroup(pipe, buffers, key, { sensitive = false } = {}) {
+    if (!this.cacheBindGroups || !key) return this.uncachedBindGroup(pipe, buffers);
+    const fullKey = `${this.idForPipeline(pipe)}:${key}:${buffers.map((b) => this.idForBuffer(b)).join(",")}`;
+    let bg = this.bindGroups.get(fullKey);
+    if (!bg) {
+      bg = this.uncachedBindGroup(pipe, buffers);
+      this.bindGroups.set(fullKey, bg);
+      if (sensitive) this.sensitiveBindGroups.add(fullKey);
+    }
+    return bg;
+  }
+  clearSensitiveBindGroups() {
+    for (const key of this.sensitiveBindGroups) this.bindGroups.delete(key);
+    this.sensitiveBindGroups.clear();
+  }
+};
+
 // src/qwgpu/runtime.js
 var STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
 var UNIFORM = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
@@ -35402,36 +35491,26 @@ var QwenWGPU = class {
     this.lora = null;
     this.bufs = {};
     this.opts = opts;
+    this.pool = new GPUBufferPool(device, { cacheBindGroups: opts.cacheBindGroups !== false });
+    this._loraEpoch = 0;
   }
   _buf(size, usage = STORAGE) {
-    return this.dev.createBuffer({ size, usage });
+    return this.pool.buffer(size, usage);
   }
   _f32(arr, usage = STORAGE) {
-    const b = this._buf(arr.byteLength, usage);
-    this.dev.queue.writeBuffer(b, 0, arr);
-    return b;
+    return this.pool.uploadF32(arr, usage);
   }
   _u32(arr) {
-    const b = this._buf(arr.byteLength, STORAGE);
-    this.dev.queue.writeBuffer(b, 0, arr);
-    return b;
+    return this.pool.uploadU32(arr, STORAGE);
   }
   _uni(arr) {
-    if (!this._uniPool) {
-      this._uniPool = [];
-      this._uniIdx = 0;
-    }
-    let b = this._uniPool[this._uniIdx];
-    if (!b) {
-      b = this._buf(32, UNIFORM);
-      this._uniPool[this._uniIdx] = b;
-    }
-    this._uniIdx++;
-    this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
-    return b;
+    return this.pool.dynamicUniform(arr, UNIFORM);
+  }
+  _staticUni(key, arr) {
+    return this.pool.staticUniform(key, arr, UNIFORM);
   }
   _resetUni() {
-    this._uniIdx = 0;
+    this.pool.resetUniforms();
   }
   _pipe(code) {
     const m = this.dev.createShaderModule({ code });
@@ -35516,8 +35595,8 @@ var QwenWGPU = class {
     this.idsRead = this._buf(this.MAXBATCH * 4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
     this.sT = null;
     this.sTcap = 0;
+    this._initStaticUniforms();
     onProgress("ready", 1);
-    this._uniCache = {};
     return this;
   }
   _buildRope(maxSeq) {
@@ -35536,15 +35615,63 @@ var QwenWGPU = class {
     this.ropeSin = this._f32(sin);
     this._ropeRow = headDim * 4;
   }
+  _initStaticUniforms() {
+    const c = this.cfg;
+    const rms = new ArrayBuffer(8);
+    const rmsDv = new DataView(rms);
+    rmsDv.setFloat32(0, c.hiddenSize, true);
+    rmsDv.setFloat32(4, c.rmsNormEps, true);
+    this.u = {
+      rmsHidden: this._staticUni(`rms:${c.hiddenSize}:${c.rmsNormEps}`, new Uint8Array(rms)),
+      addHidden: this._staticUni(`u32:${c.hiddenSize}`, new Uint32Array([c.hiddenSize])),
+      siluIntermediate: this._staticUni(`u32:${c.intermediateSize}`, new Uint32Array([c.intermediateSize])),
+      embedBuf: this._staticUni(`embedBuf:${c.hiddenSize}`, new Uint32Array([c.hiddenSize])),
+      argmax: this._staticUni(`argmax:${c.vocabSize}`, new Uint32Array([c.vocabSize]))
+    };
+  }
+  _gemvMeta(q, biasBuf, mod) {
+    const gx = Math.min(q.N, 65535);
+    const meta = new ArrayBuffer(32);
+    const dv = new DataView(meta);
+    dv.setUint32(0, q.K, true);
+    dv.setUint32(4, q.N, true);
+    dv.setUint32(8, mod ? mod.rank : 0, true);
+    dv.setUint32(12, biasBuf ? 1 : 0, true);
+    dv.setUint32(16, mod ? 1 : 0, true);
+    dv.setUint32(20, gx, true);
+    dv.setFloat32(24, mod ? mod.scale : 0, true);
+    return { gx, gy: Math.ceil(q.N / gx), buf: this._staticUni(`gemv:${q.K}:${q.N}:${biasBuf ? 1 : 0}:${mod ? `${this._loraEpoch}:${mod.rank}:${mod.scale}` : "base"}`, new Uint8Array(meta)) };
+  }
+  _gemv4Meta(q, biasBuf, mod) {
+    const gx = Math.min(q.N, 65535);
+    const meta = new ArrayBuffer(32);
+    const dv = new DataView(meta);
+    dv.setUint32(0, q.K, true);
+    dv.setUint32(4, q.N, true);
+    dv.setUint32(8, mod ? mod.rank : 0, true);
+    dv.setUint32(12, biasBuf ? 1 : 0, true);
+    dv.setUint32(16, mod ? 1 : 0, true);
+    dv.setUint32(20, gx, true);
+    dv.setFloat32(24, mod ? mod.scale : 0, true);
+    dv.setUint32(28, q.gpr, true);
+    return { gx, gy: Math.ceil(q.N / gx), buf: this._staticUni(`gemv4:${q.K}:${q.N}:${q.gpr}:${biasBuf ? 1 : 0}:${mod ? `${this._loraEpoch}:${mod.rank}:${mod.scale}` : "base"}`, new Uint8Array(meta)) };
+  }
   setLora(adapter) {
     this.lora = adapter;
+    this._loraEpoch++;
+    this.pool.clearSensitiveBindGroups();
   }
   // {modules: {key:{A,B,rank,scale}}}  A:[K][rank], B:[rank][N] f32 GPUBuffers
   clearLora() {
     this.lora = null;
+    this._loraEpoch++;
+    this.pool.clearSensitiveBindGroups();
   }
   _bg(pipe, buffers) {
-    return this.dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } })) });
+    return this.pool.uncachedBindGroup(pipe, buffers);
+  }
+  _bgCached(pipe, buffers, key, opts) {
+    return this.pool.cachedBindGroup(pipe, buffers, key, opts);
   }
   _dispatch(enc, pipe, bg, gx, gy = 1, cat2) {
     let ts2;
@@ -35588,47 +35715,36 @@ var QwenWGPU = class {
   gemv(enc, xBuf, q, yBuf, biasBuf, moduleKey) {
     const mod = this.lora?.modules?.[moduleKey];
     if (mod) {
-      const bgA = this._bg(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, this._uni(new Uint32Array([q.K, mod.rank]))]);
+      const uA = this._staticUni(`loraA:${this._loraEpoch}:${q.K}:${mod.rank}`, new Uint32Array([q.K, mod.rank]));
+      const bgA = this._bgCached(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, uA], `loraA:${moduleKey}:${this._loraEpoch}`, { sensitive: true });
       this._dispatch(enc, this.pipes.loraA, bgA, mod.rank, 1, "loraA");
     }
-    const meta = new ArrayBuffer(32);
-    const dv = new DataView(meta);
-    dv.setUint32(0, q.K, true);
-    dv.setUint32(4, q.N, true);
-    dv.setUint32(8, mod ? mod.rank : 0, true);
-    dv.setUint32(12, biasBuf ? 1 : 0, true);
-    dv.setUint32(16, mod ? 1 : 0, true);
-    const gx = Math.min(q.N, 65535), gy = Math.ceil(q.N / gx);
-    dv.setUint32(20, gx, true);
-    dv.setFloat32(24, mod ? mod.scale : 0, true);
-    const bg = this._bg(this.pipes.gemv, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, this._uni(new Uint8Array(meta))]);
-    this._dispatch(enc, this.pipes.gemv, bg, gx, gy, `gemv:${q.N}x${q.K}`);
+    const meta = this._gemvMeta(q, biasBuf, mod);
+    const key = `gemv:${moduleKey || "base"}:${q.K}:${q.N}:${biasBuf ? 1 : 0}:${mod ? this._loraEpoch : 0}`;
+    const bg = this._bgCached(this.pipes.gemv, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, meta.buf], key, { sensitive: !!mod });
+    this._dispatch(enc, this.pipes.gemv, bg, meta.gx, meta.gy, `gemv:${q.N}x${q.K}`);
   }
   gemv4(enc, xBuf, q, yBuf, biasBuf, moduleKey) {
     const mod = this.lora?.modules?.[moduleKey];
     if (mod) {
-      this._dispatch(enc, this.pipes.loraA, this._bg(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, this._uni(new Uint32Array([q.K, mod.rank]))]), mod.rank, 1, "loraA");
+      const uA = this._staticUni(`loraA:${this._loraEpoch}:${q.K}:${mod.rank}`, new Uint32Array([q.K, mod.rank]));
+      this._dispatch(enc, this.pipes.loraA, this._bgCached(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, uA], `loraA:${moduleKey}:${this._loraEpoch}`, { sensitive: true }), mod.rank, 1, "loraA");
     }
-    const gx = Math.min(q.N, 65535), gy = Math.ceil(q.N / gx);
-    const meta = new ArrayBuffer(32);
-    const dv = new DataView(meta);
-    dv.setUint32(0, q.K, true);
-    dv.setUint32(4, q.N, true);
-    dv.setUint32(8, mod ? mod.rank : 0, true);
-    dv.setUint32(12, biasBuf ? 1 : 0, true);
-    dv.setUint32(16, mod ? 1 : 0, true);
-    dv.setUint32(20, gx, true);
-    dv.setFloat32(24, mod ? mod.scale : 0, true);
-    dv.setUint32(28, q.gpr, true);
-    const bg = this._bg(this.pipes.gemv4, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, this._uni(new Uint8Array(meta))]);
-    this._dispatch(enc, this.pipes.gemv4, bg, gx, gy, `g4:${q.N}x${q.K}`);
+    const meta = this._gemv4Meta(q, biasBuf, mod);
+    const key = `gemv4:${moduleKey || "base"}:${q.K}:${q.N}:${q.gpr}:${biasBuf ? 1 : 0}:${mod ? this._loraEpoch : 0}`;
+    const bg = this._bgCached(this.pipes.gemv4, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, meta.buf], key, { sensitive: !!mod });
+    this._dispatch(enc, this.pipes.gemv4, bg, meta.gx, meta.gy, `g4:${q.N}x${q.K}`);
   }
   rms(enc, xBuf, gBuf, yBuf, K2) {
-    const u = new ArrayBuffer(8);
-    const dv = new DataView(u);
-    dv.setFloat32(0, K2, true);
-    dv.setFloat32(4, this.cfg.rmsNormEps, true);
-    this._dispatch(enc, this.pipes.rms, this._bg(this.pipes.rms, [xBuf, gBuf, yBuf, this._uni(new Uint8Array(u))]), 1, 1, "rms");
+    let u = this.u?.rmsHidden;
+    if (!u || K2 !== this.cfg.hiddenSize) {
+      const raw = new ArrayBuffer(8);
+      const dv = new DataView(raw);
+      dv.setFloat32(0, K2, true);
+      dv.setFloat32(4, this.cfg.rmsNormEps, true);
+      u = this._staticUni(`rms:${K2}:${this.cfg.rmsNormEps}`, new Uint8Array(raw));
+    }
+    this._dispatch(enc, this.pipes.rms, this._bgCached(this.pipes.rms, [xBuf, gBuf, yBuf, u], `rms:${K2}`), 1, 1, "rms");
   }
   rope(enc, xBuf, pos, nHeads) {
     this._dispatch(enc, this.pipes.rope, this._bg(this.pipes.rope, [xBuf, this.ropeCos, this.ropeSin, this._uni(new Uint32Array([nHeads, this.cfg.headDim, pos]))]), Math.ceil(nHeads * (this.cfg.headDim / 2) / 256), 1, "rope");
@@ -35677,10 +35793,14 @@ var QwenWGPU = class {
     this.gemv(enc, S.normed, this.q["model.embed_tokens.weight"], S.logits, null, null);
   }
   _addInto(enc, yBuf, aBuf, n) {
-    this._dispatch(enc, this.pipes.add, this._bg(this.pipes.add, [aBuf, yBuf, this._uni(new Uint32Array([n]))]), Math.min(Math.ceil(n / 256), 65535), 1, "add");
+    const u = n === this.cfg.hiddenSize ? this.u.addHidden : this._uni(new Uint32Array([n]));
+    const bg = n === this.cfg.hiddenSize ? this._bgCached(this.pipes.add, [aBuf, yBuf, u], `add:${n}`) : this._bg(this.pipes.add, [aBuf, yBuf, u]);
+    this._dispatch(enc, this.pipes.add, bg, Math.min(Math.ceil(n / 256), 65535), 1, "add");
   }
   _siluMul(enc, gateBuf, upBuf, n) {
-    this._dispatch(enc, this.pipes.silu, this._bg(this.pipes.silu, [gateBuf, upBuf, this._uni(new Uint32Array([n]))]), Math.min(Math.ceil(n / 256), 65535), 1, "silu");
+    const u = n === this.cfg.intermediateSize ? this.u.siluIntermediate : this._uni(new Uint32Array([n]));
+    const bg = n === this.cfg.intermediateSize ? this._bgCached(this.pipes.silu, [gateBuf, upBuf, u], `silu:${n}`) : this._bg(this.pipes.silu, [gateBuf, upBuf, u]);
+    this._dispatch(enc, this.pipes.silu, bg, Math.min(Math.ceil(n / 256), 65535), 1, "silu");
   }
   embedRow(enc, id) {
     const e = this.q["model.embed_tokens.weight"];
@@ -35688,7 +35808,7 @@ var QwenWGPU = class {
   }
   async argmaxLogits() {
     const enc = this.dev.createCommandEncoder();
-    this._dispatch(enc, this.pipes.argmax, this._bg(this.pipes.argmax, [this.s.logits, this.s.amax, this._uni(new Uint32Array([this.cfg.vocabSize]))]), 1);
+    this._dispatch(enc, this.pipes.argmax, this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], "argmax"), 1);
     const rb = this._buf(4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
     enc.copyBufferToBuffer(this.s.amax, 0, rb, 0, 4);
     this.dev.queue.submit([enc.finish()]);
@@ -35709,11 +35829,11 @@ var QwenWGPU = class {
   // embed the token id held in s.amax (GPU-resident, from a prior argmax)
   embedFromBuf(enc) {
     const e = this.q["model.embed_tokens.weight"];
-    this._dispatch(enc, this.pipes.embedBuf, this._bg(this.pipes.embedBuf, [e.w, e.scale, this.s.hidden, this.s.amax, this._uni(new Uint32Array([this.cfg.hiddenSize]))]), Math.ceil(this.cfg.hiddenSize / 256), 1, "embed");
+    this._dispatch(enc, this.pipes.embedBuf, this._bgCached(this.pipes.embedBuf, [e.w, e.scale, this.s.hidden, this.s.amax, this.u.embedBuf], "embedBuf"), Math.ceil(this.cfg.hiddenSize / 256), 1, "embed");
   }
   // argmax(logits) -> s.amax, within the given encoder (no submit/readback)
   argmaxInto(enc) {
-    this._dispatch(enc, this.pipes.argmax, this._bg(this.pipes.argmax, [this.s.logits, this.s.amax, this._uni(new Uint32Array([this.cfg.vocabSize]))]), 1, 1, "argmax");
+    this._dispatch(enc, this.pipes.argmax, this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], "argmax"), 1, 1, "argmax");
   }
   // GPU-resident batched greedy decode: chains embed->step->argmax->embed for K
   // tokens in ONE submit (no per-token CPU sync), reads back K ids once. Assumes
