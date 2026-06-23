@@ -35765,6 +35765,7 @@ var QwenWGPU = class {
     this.pool = new GPUBufferPool(device, { cacheBindGroups: opts.cacheBindGroups !== false });
     this._loraEpoch = 0;
     this._argmaxReadBusy = false;
+    this._topKReadBusy = false;
   }
   _buf(size, usage = STORAGE) {
     return this.pool.buffer(size, usage);
@@ -36028,14 +36029,45 @@ var QwenWGPU = class {
     const interactive = emitted < this.decodeBatchWarmupTokens ? this.decodeBatchWarmupSize : this.MAXBATCH;
     return Math.max(0, Math.min(interactive, remaining, this.maxCtx - pos, this.decodeBatchCapacity));
   }
+  async _resetAutotuneDecodeState(tokens, seedTokenId = 0) {
+    const c = this.cfg, S = this.s, H = c.hiddenSize, hd = c.headDim, qd = c.numHeads * hd, kvd = c.numKVHeads * hd, I = c.intermediateSize;
+    const nsplitMax = Math.ceil(this.maxCtx / this.CHUNK);
+    const touchedTokens = Math.min(Math.max(0, Math.floor(tokens)), this.maxCtx);
+    const enc = this.dev.createCommandEncoder();
+    const clear = (buf, bytes) => {
+      if (bytes > 0) enc.clearBuffer(buf, 0, bytes);
+    };
+    clear(S.hidden, H * 4);
+    clear(S.normed, H * 4);
+    clear(S.q, qd * 4);
+    clear(S.k, kvd * 4);
+    clear(S.v, kvd * 4);
+    clear(S.attn, qd * 4);
+    clear(S.tmp, Math.max(qd, I) * 4);
+    clear(S.tmp2, I * 4);
+    clear(S.logits, c.vocabSize * 4);
+    clear(S.loraD, 256 * 4);
+    clear(S.idsBuf, this.decodeBatchCapacity * 4);
+    clear(S.pm, c.numHeads * nsplitMax * 4);
+    clear(S.pz, c.numHeads * nsplitMax * 4);
+    clear(S.po, c.numHeads * nsplitMax * hd * 4);
+    const kvBytes = touchedTokens * kvd * 4;
+    for (let i = 0; i < c.numLayers; i++) {
+      clear(this.kc[i], kvBytes);
+      clear(this.vc[i], kvBytes);
+    }
+    this.dev.queue.submit([enc.finish()]);
+    this.dev.queue.writeBuffer(S.amax, 0, new Uint32Array([seedTokenId]));
+    if (this.dev.queue.onSubmittedWorkDone) await this.dev.queue.onSubmittedWorkDone();
+  }
   async autotuneDecodeBatch() {
     const candidates = [...new Set(this.decodeBatchCandidates)].filter((k2) => k2 >= 1 && k2 <= this.decodeBatchCapacity && k2 <= this.maxCtx).sort((a, b) => a - b);
     const rows = [];
+    const resetTokens = candidates.length ? Math.max(...candidates) : 0;
     let selected = this.MAXBATCH, best = Infinity;
     try {
       for (const k2 of candidates) {
-        this.dev.queue.writeBuffer(this.s.amax, 0, new Uint32Array([0]));
-        await this.dev.queue.onSubmittedWorkDone?.();
+        await this._resetAutotuneDecodeState(resetTokens);
         const t0 = performance.now();
         await this.decodeGreedyBatch(0, k2);
         const ms2 = performance.now() - t0;
@@ -36049,9 +36081,16 @@ var QwenWGPU = class {
       }
       if (!rows.some((r) => r.k === selected) && rows.length) selected = rows.reduce((a, b) => a.msPerToken <= b.msPerToken ? a : b).k;
       this.MAXBATCH = selected;
-      this.decodeBatchTuning = { selected, candidates: rows, reason: "auto wall-clock decodeGreedyBatch" };
+      this.decodeBatchTuning = { selected, candidates: rows, reason: "auto wall-clock decodeGreedyBatch with reset state" };
     } catch (e) {
       this.decodeBatchTuning = { selected: this.MAXBATCH, candidates: rows, reason: `auto failed: ${e.message}` };
+    } finally {
+      if (resetTokens > 0) {
+        try {
+          await this._resetAutotuneDecodeState(resetTokens);
+        } catch {
+        }
+      }
     }
     return this.decodeBatchTuning;
   }
@@ -36167,21 +36206,27 @@ var QwenWGPU = class {
     }
   }
   async topKLogits(k2 = this.samplingTopK) {
-    k2 = Math.min(Math.max(1, Math.floor(k2)), this.maxSamplingTopK, this.cfg.vocabSize);
-    const enc = this.dev.createCommandEncoder();
-    for (let i = 0; i < k2; i++) {
-      const u = this._staticUni(`topk:${this.cfg.vocabSize}:${i}`, new Uint32Array([this.cfg.vocabSize, i]));
-      this._dispatch(enc, this.pipes.topkSelect, this._bgCached(this.pipes.topkSelect, [this.s.logits, this.s.sampleIds, this.s.sampleVals, u], `topk:${i}`), 1, 1, "topk");
+    if (this._topKReadBusy) throw new Error("topKLogits() is already in flight; concurrent sampling is not supported");
+    this._topKReadBusy = true;
+    try {
+      k2 = Math.min(Math.max(1, Math.floor(k2)), this.maxSamplingTopK, this.cfg.vocabSize);
+      const enc = this.dev.createCommandEncoder();
+      for (let i = 0; i < k2; i++) {
+        const u = this._staticUni(`topk:${this.cfg.vocabSize}:${i}`, new Uint32Array([this.cfg.vocabSize, i]));
+        this._dispatch(enc, this.pipes.topkSelect, this._bgCached(this.pipes.topkSelect, [this.s.logits, this.s.sampleIds, this.s.sampleVals, u], `topk:${i}`), 1, 1, "topk");
+      }
+      enc.copyBufferToBuffer(this.s.sampleIds, 0, this.sampleIdsRead, 0, k2 * 4);
+      enc.copyBufferToBuffer(this.s.sampleVals, 0, this.sampleValsRead, 0, k2 * 4);
+      this.dev.queue.submit([enc.finish()]);
+      await Promise.all([this.sampleIdsRead.mapAsync(GPUMapMode.READ), this.sampleValsRead.mapAsync(GPUMapMode.READ)]);
+      const ids = Array.from(new Uint32Array(this.sampleIdsRead.getMappedRange(), 0, k2));
+      const vals = Array.from(new Float32Array(this.sampleValsRead.getMappedRange(), 0, k2));
+      return ids.map((id, i) => ({ id, logit: vals[i] }));
+    } finally {
+      if (this.sampleIdsRead.mapState !== "unmapped") this.sampleIdsRead.unmap();
+      if (this.sampleValsRead.mapState !== "unmapped") this.sampleValsRead.unmap();
+      this._topKReadBusy = false;
     }
-    enc.copyBufferToBuffer(this.s.sampleIds, 0, this.sampleIdsRead, 0, k2 * 4);
-    enc.copyBufferToBuffer(this.s.sampleVals, 0, this.sampleValsRead, 0, k2 * 4);
-    this.dev.queue.submit([enc.finish()]);
-    await Promise.all([this.sampleIdsRead.mapAsync(GPUMapMode.READ), this.sampleValsRead.mapAsync(GPUMapMode.READ)]);
-    const ids = Array.from(new Uint32Array(this.sampleIdsRead.getMappedRange(), 0, k2));
-    const vals = Array.from(new Float32Array(this.sampleValsRead.getMappedRange(), 0, k2));
-    this.sampleIdsRead.unmap();
-    this.sampleValsRead.unmap();
-    return ids.map((id, i) => ({ id, logit: vals[i] }));
   }
   // Run one token end-to-end (embed + step) and submit.
   token(id, pos) {
