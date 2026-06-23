@@ -4,6 +4,7 @@
 //   A -> [rank][in]  (transposed so loraA reads each rank-row contiguously)
 //   B -> [rank][out] (GEMV reads loraB[r*N + n])
 // Returns { name, modules: { "layers.I.sub.proj": {A,B,rank,scale} } } for setLora().
+import { moduleKeyFromTensorName } from './qwgpu/model_schema.js';
 
 function parseSt(buf) {
   const dv = new DataView(buf);
@@ -18,11 +19,6 @@ function readTensor(st, name) {
   const dt = t.dtype.toUpperCase();
   const arr = dt === 'BF16' ? bf16f32(st.u8, st.dataStart + t.data_offsets[0], n) : f32(st.u8, st.dataStart + t.data_offsets[0], n);
   return { arr, shape: t.shape };
-}
-function moduleKey(name) {
-  const m = name.match(/layers\.(\d+)\.(self_attn|mlp)\.([a-z_]+?)(_proj)?\.(lora_[ABab])/i);
-  if (!m) return null;
-  return `layers.${m[1]}.${m[2]}.${m[3].replace(/_proj$/, '')}_proj`;
 }
 const isA = (name) => /lora_a/i.test(name);
 // [rows][cols] row-major -> [cols][rows] row-major
@@ -44,7 +40,7 @@ export async function loadLoraAdapterGPU(dev, files, cfg) {
   const st = parseSt(await stFile.arrayBuffer());
   const names = Object.keys(st.header).filter(k => k !== '__metadata__' && /lora_[abAB]/.test(k));
   const groups = {};
-  for (const nm of names) { const key = moduleKey(nm); if (!key) continue; (groups[key] ||= {})[isA(nm) ? 'A' : 'B'] = readTensor(st, nm); }
+  for (const nm of names) { const key = moduleKeyFromTensorName(nm); if (!key) continue; (groups[key] ||= {})[isA(nm) ? 'A' : 'B'] = readTensor(st, nm); }
 
   const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
   const mk = (arr) => { const b = dev.createBuffer({ size: arr.byteLength, usage: S }); dev.queue.writeBuffer(b, 0, arr); return b; };

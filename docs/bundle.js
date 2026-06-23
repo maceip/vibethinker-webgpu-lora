@@ -7880,12 +7880,12 @@ async function createInferenceSession(buffer_or_path, session_options, session_c
     logSeverityLevel,
     ...session_options
   });
-  const session = await (apis.IS_WEB_ENV ? webInitChain = webInitChain.then(load) : load());
-  session.config = session_config;
-  return session;
+  const session2 = await (apis.IS_WEB_ENV ? webInitChain = webInitChain.then(load) : load());
+  session2.config = session_config;
+  return session2;
 }
-async function runInferenceSession(session, ortFeed) {
-  const run = () => session.run(ortFeed);
+async function runInferenceSession(session2, ortFeed) {
+  const run = () => session2.run(ortFeed);
   return apis.IS_WEB_ENV ? webInferenceChain = webInferenceChain.then(run) : run();
 }
 function isONNXTensor(x) {
@@ -8418,9 +8418,9 @@ function getTokenFromConfig(config, ...keys) {
   }
   return null;
 }
-function getSpecialTokens(tokenizer2) {
+function getSpecialTokens(tokenizer) {
   const special = [];
-  for (const value of tokenizer2.get_added_tokens_decoder().values()) {
+  for (const value of tokenizer.get_added_tokens_decoder().values()) {
     if (value.special) special.push(value);
   }
   return special;
@@ -9912,8 +9912,8 @@ async function constructSessions(pretrained_model_name_or_path, names, options, 
           cache_config,
           name
         );
-        const session = await createInferenceSession(buffer_or_path, session_options, session_config);
-        return [name, session];
+        const session2 = await createInferenceSession(buffer_or_path, session_options, session_config);
+        return [name, session2];
       })
     )
   );
@@ -9928,8 +9928,8 @@ function replaceTensors(obj) {
   }
   return obj;
 }
-async function sessionRun(session, inputs) {
-  const checkedInputs = validateInputs(session, inputs);
+async function sessionRun(session2, inputs) {
+  const checkedInputs = validateInputs(session2, inputs);
   try {
     const ortFeed = Object.fromEntries(
       Object.entries(checkedInputs).map(([k2, v]) => {
@@ -9945,7 +9945,7 @@ async function sessionRun(session, inputs) {
         return [k2, tensor];
       })
     );
-    const output = await runInferenceSession(session, ortFeed);
+    const output = await runInferenceSession(session2, ortFeed);
     return replaceTensors(output);
   } catch (e) {
     const formatted = Object.fromEntries(
@@ -9966,10 +9966,10 @@ async function sessionRun(session, inputs) {
     throw e;
   }
 }
-function validateInputs(session, inputs) {
+function validateInputs(session2, inputs) {
   const checkedInputs = /* @__PURE__ */ Object.create(null);
   const missingInputs = [];
-  for (const inputName of session.inputNames) {
+  for (const inputName of session2.inputNames) {
     const tensor = inputs[inputName];
     if (!(tensor instanceof Tensor22)) {
       missingInputs.push(inputName);
@@ -9983,9 +9983,9 @@ function validateInputs(session, inputs) {
     );
   }
   const numInputsProvided = Object.keys(inputs).length;
-  const numInputsNeeded = session.inputNames.length;
+  const numInputsNeeded = session2.inputNames.length;
   if (numInputsProvided > numInputsNeeded) {
-    let ignored = Object.keys(inputs).filter((inputName) => !session.inputNames.includes(inputName));
+    let ignored = Object.keys(inputs).filter((inputName) => !session2.inputNames.includes(inputName));
     logger.warn(
       `WARNING: Too many inputs were provided (${numInputsProvided} > ${numInputsNeeded}). The following inputs will be ignored: "${ignored.join(", ")}".`
     );
@@ -10143,28 +10143,28 @@ async function seq2seq_forward(self2, model_inputs) {
   return await decoder_forward(self2, other_decoder_inputs, true);
 }
 async function encoder_forward(self2, model_inputs) {
-  const session = self2.sessions["model"];
-  const encoderFeeds = pick(model_inputs, session.inputNames);
-  if (session.inputNames.includes("inputs_embeds") && !encoderFeeds.inputs_embeds) {
+  const session2 = self2.sessions["model"];
+  const encoderFeeds = pick(model_inputs, session2.inputNames);
+  if (session2.inputNames.includes("inputs_embeds") && !encoderFeeds.inputs_embeds) {
     if (!model_inputs.input_ids) {
       throw new Error("Both `input_ids` and `inputs_embeds` are missing in the model inputs.");
     }
     encoderFeeds.inputs_embeds = await self2.encode_text({ input_ids: model_inputs.input_ids });
   }
-  if (session.inputNames.includes("token_type_ids") && !encoderFeeds.token_type_ids) {
+  if (session2.inputNames.includes("token_type_ids") && !encoderFeeds.token_type_ids) {
     if (!encoderFeeds.input_ids) {
       throw new Error("Both `input_ids` and `token_type_ids` are missing in the model inputs.");
     }
     encoderFeeds.token_type_ids = zeros_like(encoderFeeds.input_ids);
   }
-  if (session.inputNames.includes("pixel_mask") && !encoderFeeds.pixel_mask) {
+  if (session2.inputNames.includes("pixel_mask") && !encoderFeeds.pixel_mask) {
     if (!encoderFeeds.pixel_values) {
       throw new Error("Both `pixel_values` and `pixel_mask` are missing in the model inputs.");
     }
     const dims = encoderFeeds.pixel_values.dims;
     encoderFeeds.pixel_mask = ones([dims[0], dims[2], dims[3]]);
   }
-  return await sessionRun(session, encoderFeeds);
+  return await sessionRun(session2, encoderFeeds);
 }
 async function auto_encoder_forward(self2, model_inputs) {
   const encoded = await self2.encode(model_inputs);
@@ -10215,7 +10215,7 @@ function addPastKeyValues(self2, decoderFeeds, pastKeyValues) {
     Object.assign(decoderFeeds, pastKeyValues);
     return pastKeyValues;
   }
-  const session = self2.sessions["decoder_model_merged"] ?? self2.sessions["model"];
+  const session2 = self2.sessions["decoder_model_merged"] ?? self2.sessions["model"];
   const batch_size = (decoderFeeds[self2.main_input_name] ?? decoderFeeds.attention_mask)?.dims?.[0] ?? 1;
   const names = getCacheNames(self2.config);
   const num_heads = self2.config?.normalized_config?.num_heads;
@@ -10224,7 +10224,7 @@ function addPastKeyValues(self2, decoderFeeds, pastKeyValues) {
     symbols["batch_size x num_heads"] = batch_size * num_heads;
   }
   const entries = /* @__PURE__ */ Object.create(null);
-  for (const meta of session.inputMetadata) {
+  for (const meta of session2.inputMetadata) {
     if (!names.has(meta.name)) continue;
     const shape = resolveCacheShape(meta.shape, symbols);
     const size = shape.reduce((a, b) => a * b, 1);
@@ -10240,23 +10240,23 @@ function addPastKeyValues(self2, decoderFeeds, pastKeyValues) {
   return new DynamicCache(entries);
 }
 async function decoder_forward(self2, model_inputs, is_encoder_decoder = false) {
-  const session = self2.sessions[is_encoder_decoder ? "decoder_model_merged" : "model"];
+  const session2 = self2.sessions[is_encoder_decoder ? "decoder_model_merged" : "model"];
   const { past_key_values, ...new_model_inputs } = model_inputs;
-  if (session.inputNames.includes("use_cache_branch")) {
+  if (session2.inputNames.includes("use_cache_branch")) {
     new_model_inputs.use_cache_branch = boolTensor(
       past_key_values != null && Object.keys(past_key_values).length > 0
     );
   }
-  if (session.inputNames.includes("position_ids") && new_model_inputs.attention_mask && !new_model_inputs.position_ids) {
+  if (session2.inputNames.includes("position_ids") && new_model_inputs.attention_mask && !new_model_inputs.position_ids) {
     const start_index = ["paligemma", "gemma3_text", "gemma3"].includes(self2.config.model_type) ? 1 : 0;
     new_model_inputs.position_ids = create_position_ids(new_model_inputs, past_key_values, start_index);
   }
-  if (session.inputNames.includes("num_logits_to_keep") && !new_model_inputs.num_logits_to_keep) {
+  if (session2.inputNames.includes("num_logits_to_keep") && !new_model_inputs.num_logits_to_keep) {
     new_model_inputs.num_logits_to_keep = new Tensor22("int64", [0n], []);
   }
   addPastKeyValues(self2, new_model_inputs, past_key_values);
-  const fixed = pick(new_model_inputs, session.inputNames);
-  return await sessionRun(session, fixed);
+  const fixed = pick(new_model_inputs, session2.inputNames);
+  return await sessionRun(session2, fixed);
 }
 async function generic_text_to_text_forward(self2, {
   // Generic parameters:
@@ -10394,8 +10394,8 @@ function create_position_ids(model_inputs, past_key_values = null, start_index =
 }
 function decoder_prepare_inputs_for_generation(self2, input_ids, model_inputs, generation_config) {
   const past_length = model_inputs.past_key_values ? model_inputs.past_key_values.get_seq_length() : 0;
-  const session = self2.sessions["decoder_model_merged"] ?? self2.sessions["model"];
-  if (session?.inputNames.includes("num_logits_to_keep") && !model_inputs.num_logits_to_keep) {
+  const session2 = self2.sessions["decoder_model_merged"] ?? self2.sessions["model"];
+  if (session2?.inputNames.includes("num_logits_to_keep") && !model_inputs.num_logits_to_keep) {
     model_inputs.num_logits_to_keep = new Tensor22("int64", [1n], []);
   }
   if (!model_inputs.attention_mask) {
@@ -10653,7 +10653,7 @@ function getTag(entity) {
   const p = entity[0];
   return entity[1] === "-" && (p === "B" || p === "I" || p === "E" || p === "S") ? [p, entity.slice(2)] : ["I", entity];
 }
-function groupEntities(tokens, ids, tokenizer2) {
+function groupEntities(tokens, ids, tokenizer) {
   const groups = [];
   let openTag = null;
   for (let i = 0; i < tokens.length; ++i) {
@@ -10677,7 +10677,7 @@ function groupEntities(tokens, ids, tokenizer2) {
     return {
       entity_group: tag,
       score: scoreSum / (end - start),
-      word: tokenizer2.decode(groupIds, { skip_special_tokens: true })
+      word: tokenizer.decode(groupIds, { skip_special_tokens: true })
     };
   });
 }
@@ -10808,13 +10808,13 @@ async function pipeline2(task, model = null, {
   } else {
     modelPromise = modelClasses.from_pretrained(model, pretrainedOptions);
   }
-  const [tokenizer2, processor, model_loaded] = await Promise.all([
+  const [tokenizer, processor, model_loaded] = await Promise.all([
     hasTokenizer ? AutoTokenizer.from_pretrained(model, pretrainedOptions) : null,
     hasProcessor ? AutoProcessor.from_pretrained(model, pretrainedOptions) : null,
     modelPromise
   ]);
   const results = { task, model: model_loaded };
-  if (tokenizer2) results.tokenizer = tokenizer2;
+  if (tokenizer) results.tokenizer = tokenizer;
   if (processor) results.processor = processor;
   dispatchCallback(progress_callback, {
     status: "ready",
@@ -12021,8 +12021,8 @@ var init_transformers_web = __esm({
        */
       pre_tokenize_text(text, options) {
         return this.tokenizers.reduce(
-          (pre_tokenized_text, tokenizer2) => {
-            return tokenizer2 ? tokenizer2.pre_tokenize(pre_tokenized_text, options) : pre_tokenized_text;
+          (pre_tokenized_text, tokenizer) => {
+            return tokenizer ? tokenizer.pre_tokenize(pre_tokenized_text, options) : pre_tokenized_text;
           },
           [text]
         );
@@ -13334,8 +13334,8 @@ var init_transformers_web = __esm({
     ByteFallback_default = ByteFallback;
     create_decoder_default = create_decoder;
     Tokenizer = class {
-      constructor(tokenizer2, config) {
-        const tokenizer_error = validate_object(tokenizer2, "Tokenizer", [
+      constructor(tokenizer, config) {
+        const tokenizer_error = validate_object(tokenizer, "Tokenizer", [
           "model",
           "decoder",
           "post_processor",
@@ -13349,7 +13349,7 @@ var init_transformers_web = __esm({
         if (config_error) {
           throw new Error(config_error);
         }
-        this.tokenizer = tokenizer2;
+        this.tokenizer = tokenizer;
         this.config = config;
         this.normalizer = create_normalizer_default(this.tokenizer.normalizer);
         this.pre_tokenizer = create_pre_tokenizer_default(this.tokenizer.pre_tokenizer);
@@ -16489,7 +16489,7 @@ var init_transformers_web = __esm({
       };
     }
     wrap = async (session_bytes, session_options, names) => {
-      const session = await createInferenceSession(new Uint8Array(session_bytes), session_options);
+      const session2 = await createInferenceSession(new Uint8Array(session_bytes), session_options);
       return (
         /** @type {any} */
         (async (inputs) => {
@@ -16497,7 +16497,7 @@ var init_transformers_web = __esm({
           const ortFeed = Object.fromEntries(
             Object.entries(inputs).map(([k2, v]) => [k2, (proxied ? v.clone() : v).ort_tensor])
           );
-          const outputs = await runInferenceSession(session, ortFeed);
+          const outputs = await runInferenceSession(session2, ortFeed);
           if (Array.isArray(names)) {
             return names.map((n) => new Tensor22(outputs[n]));
           } else {
@@ -23771,12 +23771,12 @@ ${boi_token}${image_tokens_expanded}${eoi_token}
         this.eoi_token = eoi_token;
       }
       static async from_pretrained(pretrained_model_name_or_path, options = {}) {
-        const [config, tokenizer2, chat_template] = await Promise.all([
+        const [config, tokenizer, chat_template] = await Promise.all([
           getModelJSON(pretrained_model_name_or_path, PROCESSOR_NAME, true, options),
           AutoTokenizer.from_pretrained(pretrained_model_name_or_path, options),
           getModelText(pretrained_model_name_or_path, CHAT_TEMPLATE_NAME, false, options)
         ]);
-        const components = { tokenizer: tokenizer2 };
+        const components = { tokenizer };
         if (config.image_processor) {
           components.image_processor = new Gemma4ImageProcessor(config.image_processor);
         }
@@ -24095,13 +24095,13 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
         } else if (!Array.isArray(images)) {
           images = [images];
         }
-        const tokenizer2 = this.tokenizer;
-        const result = tokenizer2.apply_chat_template(conversation, {
+        const tokenizer = this.tokenizer;
+        const result = tokenizer.apply_chat_template(conversation, {
           tokenize: false,
           add_generation_prompt: true,
           chat_template
         });
-        const encode = (text) => tokenizer2.encode(text, { add_special_tokens: false });
+        const encode = (text) => tokenizer.encode(text, { add_special_tokens: false });
         const parts = (
           /** @type {string} */
           result.split(this.image_tag)
@@ -24112,7 +24112,7 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
             `Number of images provided (${images.length}) does not match number of "${this.image_tag}" image tags (${num_images})`
           );
         }
-        const [image_placeholder_tag_id, image_start_tag_id, image_end_tag_id] = tokenizer2.convert_tokens_to_ids([
+        const [image_placeholder_tag_id, image_start_tag_id, image_end_tag_id] = tokenizer.convert_tokens_to_ids([
           this.image_tag,
           this.image_start_tag,
           this.image_end_tag
@@ -26441,8 +26441,8 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
        */
       async dispose() {
         const promises = [];
-        for (const session of Object.values(this.sessions)) {
-          promises.push(session.release?.());
+        for (const session2 of Object.values(this.sessions)) {
+          promises.push(session2.release?.());
         }
         return await Promise.all(promises);
       }
@@ -26997,8 +26997,8 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
         if (!Object.hasOwn(this.sessions, sessionName)) {
           throw new Error(`Model does not have a ${sessionName} session.`);
         }
-        const session = this.sessions[sessionName];
-        const output = await sessionRun(session, pick(inputs, session.inputNames));
+        const session2 = this.sessions[sessionName];
+        const output = await sessionRun(session2, pick(inputs, session2.inputNames));
         return output[outputName];
       }
       async encode_image(inputs) {
@@ -29255,8 +29255,8 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
         if (!model_inputs.attention_mask || model_inputs.position_ids) {
           return model_inputs;
         }
-        const session = this.sessions["decoder_model_merged"] ?? this.sessions["model"];
-        if (!session.inputNames.includes("position_ids")) {
+        const session2 = this.sessions["decoder_model_merged"] ?? this.sessions["model"];
+        if (!session2.inputNames.includes("position_ids")) {
           return model_inputs;
         }
         if (!model_inputs.past_key_values) {
@@ -30051,18 +30051,18 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
         const mode = this._generation_mode ?? "text";
         let output_1;
         if (mode === "text" || !model_inputs.past_key_values) {
-          const session = this.sessions["prepare_inputs_embeds"];
-          const prep_inputs = pick(model_inputs, session.inputNames);
-          output_1 = await sessionRun(session, prep_inputs);
+          const session2 = this.sessions["prepare_inputs_embeds"];
+          const prep_inputs = pick(model_inputs, session2.inputNames);
+          output_1 = await sessionRun(session2, prep_inputs);
         } else {
-          const session = this.sessions["gen_img_embeds"];
+          const session2 = this.sessions["gen_img_embeds"];
           const prep_inputs = pick(
             {
               image_ids: model_inputs.input_ids
             },
-            session.inputNames
+            session2.inputNames
           );
-          output_1 = await sessionRun(session, prep_inputs);
+          output_1 = await sessionRun(session2, prep_inputs);
         }
         const input_2 = { ...model_inputs, ...output_1 };
         const output_2 = await decoder_forward(this, input_2);
@@ -31338,9 +31338,9 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
         }
         const decoder_feeds = { inputs_embeds, ...kwargs };
         addPastKeyValues(this, decoder_feeds, past_key_values);
-        const session = this.sessions["decoder_model_merged"];
-        const fixed = pick(decoder_feeds, session.inputNames);
-        return await sessionRun(session, fixed);
+        const session2 = this.sessions["decoder_model_merged"];
+        const fixed = pick(decoder_feeds, session2.inputNames);
+        return await sessionRun(session2, fixed);
       }
       async generate({ input_features, stopping_criteria: userStoppingCriteria, ...kwargs }) {
         if (!input_features) {
@@ -32797,11 +32797,11 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
        * @param {PreTrainedTokenizer} [options.tokenizer=null] The tokenizer used by the pipeline (if any).
        * @param {Processor} [options.processor=null] The processor used by the pipeline (if any).
        */
-      constructor({ task, model, tokenizer: tokenizer2 = null, processor = null }) {
+      constructor({ task, model, tokenizer = null, processor = null }) {
         super();
         this.task = task;
         this.model = model;
-        this.tokenizer = tokenizer2;
+        this.tokenizer = tokenizer;
         this.processor = processor;
       }
       /** @type {DisposeType} */
@@ -33007,23 +33007,23 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
             texts = texts.map((x) => task_specific_params[this.task].prefix + x);
           }
         }
-        const tokenizer2 = this.tokenizer;
+        const tokenizer = this.tokenizer;
         const tokenizer_options = {
           padding: true,
           truncation: true
         };
         let inputs;
-        if (this.task === "translation" && "_build_translation_inputs" in tokenizer2) {
-          inputs = tokenizer2._build_translation_inputs(texts, tokenizer_options, generate_kwargs);
+        if (this.task === "translation" && "_build_translation_inputs" in tokenizer) {
+          inputs = tokenizer._build_translation_inputs(texts, tokenizer_options, generate_kwargs);
         } else {
-          inputs = tokenizer2(texts, tokenizer_options);
+          inputs = tokenizer(texts, tokenizer_options);
         }
         const outputTokenIds = await this.model.generate({
           ...inputs,
           ...this._default_generation_config,
           ...generate_kwargs
         });
-        return tokenizer2.batch_decode(
+        return tokenizer.batch_decode(
           /** @type {Tensor} */
           outputTokenIds,
           {
@@ -34259,7 +34259,7 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
        * @param {function(bigint[]): void} [options.token_callback_function=null] Function to call when a new token is generated
        * @param {Object} [options.decode_kwargs={}] Additional keyword arguments to pass to the tokenizer's decode method
        */
-      constructor(tokenizer2, {
+      constructor(tokenizer, {
         skip_prompt = false,
         callback_function = null,
         token_callback_function = null,
@@ -34268,7 +34268,7 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
         ...kwargs
       } = {}) {
         super();
-        this.tokenizer = tokenizer2;
+        this.tokenizer = tokenizer;
         this.skip_prompt = skip_prompt;
         this.callback_function = callback_function ?? stdout_write;
         this.token_callback_function = token_callback_function;
@@ -34366,7 +34366,7 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
        * @param {boolean} [options.skip_special_tokens=true] Whether to skip special tokens when decoding
        * @param {Object} [options.decode_kwargs={}] Additional keyword arguments to pass to the tokenizer's decode method
        */
-      constructor(tokenizer2, {
+      constructor(tokenizer, {
         skip_prompt = false,
         callback_function = null,
         token_callback_function = null,
@@ -34377,14 +34377,14 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
         skip_special_tokens = true,
         decode_kwargs = {}
       } = {}) {
-        super(tokenizer2, {
+        super(tokenizer, {
           skip_prompt,
           skip_special_tokens,
           callback_function,
           token_callback_function,
           decode_kwargs
         });
-        this.timestamp_begin = tokenizer2.timestamp_begin;
+        this.timestamp_begin = tokenizer.timestamp_begin;
         this.on_chunk_start = on_chunk_start;
         this.on_chunk_end = on_chunk_end;
         this.on_finalize = on_finalize;
@@ -34710,6 +34710,274 @@ ${this.boa_token}${this.audio_token.repeat(this._compute_audio_num_tokens(audio_
   }
 });
 
+// src/config.js
+var QWEN25_3B = {
+  hiddenSize: 2048,
+  numLayers: 36,
+  numHeads: 16,
+  numKVHeads: 2,
+  headDim: 128,
+  intermediateSize: 11008,
+  vocabSize: 151936,
+  rmsNormEps: 1e-6,
+  ropeTheta: 1e6,
+  tieWordEmbeddings: true,
+  // qkv projections have a bias in Qwen2.5; o_proj and mlp do not.
+  attentionBias: true
+};
+
+// src/qwgpu/model_schema.js
+var arrEq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+function projDesc(layer, subpath, outDim, inDim, { bias = false } = {}) {
+  const name = `model.layers.${layer}.${subpath}.weight`;
+  const m = subpath.match(/^(self_attn|mlp)\.(.+)$/);
+  const loraKey = `layers.${layer}.${m[1]}.${m[2]}`;
+  return {
+    name,
+    role: "projection",
+    quant: "int4",
+    shape: [outDim, inDim],
+    loraKey,
+    biasName: bias ? name.replace(/\.weight$/, ".bias") : null
+  };
+}
+function f32Desc(name, shape, role = "f32") {
+  return { name, role, quant: "f32", shape };
+}
+function createQwenSchema(cfg) {
+  if (!cfg.tieWordEmbeddings && cfg.tieWordEmbeddings !== void 0) {
+    throw new Error("QwenWGPU currently requires tied input/output embeddings");
+  }
+  const H = cfg.hiddenSize;
+  const QD = cfg.numHeads * cfg.headDim;
+  const KVD = cfg.numKVHeads * cfg.headDim;
+  const I = cfg.intermediateSize;
+  const tensors = [];
+  const layers = [];
+  const add = (d) => {
+    tensors.push(d);
+    return d;
+  };
+  const embed = add({ name: "model.embed_tokens.weight", role: "embedding", quant: "int8", shape: [cfg.vocabSize, H] });
+  const finalNorm = add(f32Desc("model.norm.weight", [H], "final_norm"));
+  for (let i = 0; i < cfg.numLayers; i++) {
+    const p = `model.layers.${i}`;
+    const layer = {
+      index: i,
+      inputNorm: add(f32Desc(`${p}.input_layernorm.weight`, [H], "input_norm")),
+      postAttentionNorm: add(f32Desc(`${p}.post_attention_layernorm.weight`, [H], "post_attention_norm")),
+      projections: {},
+      biases: {}
+    };
+    layer.projections.q = add(projDesc(i, "self_attn.q_proj", QD, H, { bias: !!cfg.attentionBias }));
+    layer.projections.k = add(projDesc(i, "self_attn.k_proj", KVD, H, { bias: !!cfg.attentionBias }));
+    layer.projections.v = add(projDesc(i, "self_attn.v_proj", KVD, H, { bias: !!cfg.attentionBias }));
+    layer.projections.o = add(projDesc(i, "self_attn.o_proj", H, QD));
+    layer.projections.gate = add(projDesc(i, "mlp.gate_proj", I, H));
+    layer.projections.up = add(projDesc(i, "mlp.up_proj", I, H));
+    layer.projections.down = add(projDesc(i, "mlp.down_proj", H, I));
+    for (const key of ["q", "k", "v"]) {
+      const proj = layer.projections[key];
+      if (proj.biasName) {
+        const bias = add(f32Desc(proj.biasName, [proj.shape[0]], `${key}_bias`));
+        layer.biases[key] = bias;
+      }
+    }
+    layers.push(layer);
+  }
+  const byName = new Map(tensors.map((t) => [t.name, t]));
+  const expectedNames = new Set(byName.keys());
+  return {
+    cfg,
+    tensors,
+    byName,
+    expectedNames,
+    layers,
+    embed,
+    finalNorm,
+    projectionDescs: tensors.filter((t) => t.role === "projection"),
+    validateTensor(name, shape) {
+      const desc = byName.get(name);
+      if (!desc) return null;
+      if (!arrEq(shape, desc.shape)) {
+        throw new Error(`shape mismatch for ${name}: got [${shape.join(",")}], expected [${desc.shape.join(",")}]`);
+      }
+      return desc;
+    },
+    assertComplete(seen) {
+      const missing = [];
+      for (const name of expectedNames) if (!seen.has(name)) missing.push(name);
+      if (missing.length) {
+        const sample2 = missing.slice(0, 12).join(", ");
+        throw new Error(`missing ${missing.length} required tensor(s): ${sample2}${missing.length > 12 ? ", \u2026" : ""}`);
+      }
+    }
+  };
+}
+function moduleKeyFromTensorName(name) {
+  const m = name.match(/layers\.(\d+)\.(self_attn|mlp)\.([a-z_]+?)(_proj)?\.(lora_[ABab])/i);
+  if (!m) return null;
+  return `layers.${m[1]}.${m[2]}.${m[3].replace(/_proj$/, "")}_proj`;
+}
+
+// src/lora_gpu.js
+function parseSt(buf) {
+  const dv = new DataView(buf);
+  const hl = Number(dv.getBigUint64(0, true));
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, hl)));
+  return { header, dataStart: 8 + hl, u8: new Uint8Array(buf) };
+}
+function bf16f32(u8, off, n) {
+  const u16 = new Uint16Array(u8.buffer, u8.byteOffset + off, n);
+  const o = new Float32Array(n);
+  const o32 = new Uint32Array(o.buffer);
+  for (let i = 0; i < n; i++) o32[i] = u16[i] << 16;
+  return o;
+}
+function f32(u8, off, n) {
+  return new Float32Array(u8.buffer.slice(u8.byteOffset + off, u8.byteOffset + off + n * 4));
+}
+function readTensor(st2, name) {
+  const t = st2.header[name];
+  const n = t.shape.reduce((a, b) => a * b, 1);
+  const dt = t.dtype.toUpperCase();
+  const arr = dt === "BF16" ? bf16f32(st2.u8, st2.dataStart + t.data_offsets[0], n) : f32(st2.u8, st2.dataStart + t.data_offsets[0], n);
+  return { arr, shape: t.shape };
+}
+var isA = (name) => /lora_a/i.test(name);
+function transpose2d(arr, rows, cols) {
+  const o = new Float32Array(arr.length);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) o[c * rows + r] = arr[r * cols + c];
+  return o;
+}
+async function loadLoraAdapterGPU(dev, files, cfg) {
+  const stFile = files.find((f) => f.name.endsWith(".safetensors"));
+  if (!stFile) throw new Error("no .safetensors in adapter files");
+  const cfgFile = files.find((f) => /adapter_config\.json|config\.json/.test(f.name));
+  let rankCfg = 16, scaleCfg = null;
+  if (cfgFile) {
+    const c = JSON.parse(await cfgFile.text());
+    const lp = c.lora_parameters || {};
+    rankCfg = c.r ?? c.rank ?? c.lora_rank ?? lp.rank ?? rankCfg;
+    if (lp.scale != null) scaleCfg = lp.scale;
+    else if (c.lora_alpha != null) scaleCfg = c.lora_alpha / rankCfg;
+    else if (c.alpha != null) scaleCfg = c.alpha / rankCfg;
+  }
+  const st2 = parseSt(await stFile.arrayBuffer());
+  const names = Object.keys(st2.header).filter((k2) => k2 !== "__metadata__" && /lora_[abAB]/.test(k2));
+  const groups = {};
+  for (const nm of names) {
+    const key = moduleKeyFromTensorName(nm);
+    if (!key) continue;
+    (groups[key] ||= {})[isA(nm) ? "A" : "B"] = readTensor(st2, nm);
+  }
+  const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+  const mk = (arr) => {
+    const b = dev.createBuffer({ size: arr.byteLength, usage: S });
+    dev.queue.writeBuffer(b, 0, arr);
+    return b;
+  };
+  const modules = {};
+  for (const key of Object.keys(groups)) {
+    const g = groups[key];
+    if (!g.A || !g.B) continue;
+    const r = Math.min(...g.A.shape, ...g.B.shape);
+    let Aarr = g.A.arr;
+    if (g.A.shape[0] !== r) Aarr = transpose2d(g.A.arr, g.A.shape[0], g.A.shape[1]);
+    let Barr = g.B.arr;
+    if (g.B.shape[0] !== r) Barr = transpose2d(g.B.arr, g.B.shape[0], g.B.shape[1]);
+    const scale = scaleCfg != null ? scaleCfg : 2;
+    modules[key] = { A: mk(Aarr), B: mk(Barr), rank: r, scale };
+  }
+  if (!Object.keys(modules).length) throw new Error("no LoRA modules matched layers.*.{self_attn,mlp}.*_proj");
+  const name = stFile.name.replace(/\.safetensors$/, "");
+  return { name, modules };
+}
+
+// src/readers.js
+function urlReader(baseUrl, headers = {}) {
+  const base = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+  return {
+    async range(path, start, end) {
+      const r = await fetch(base + path, { headers: { ...headers, Range: `bytes=${start}-${end - 1}` } });
+      if (!r.ok && r.status !== 206) throw new Error(`range ${path} ${start}-${end}: ${r.status}`);
+      return await r.arrayBuffer();
+    },
+    async text(path) {
+      const r = await fetch(base + path, { headers });
+      if (!r.ok) throw new Error(`fetch ${path}: ${r.status}`);
+      return await r.text();
+    }
+  };
+}
+function hfReader(repo, token = "", rev = "main") {
+  return urlReader(`https://huggingface.co/${repo}/resolve/${rev}`, token ? { Authorization: `Bearer ${token}` } : {});
+}
+function fileReader(fileMap) {
+  const pick2 = (path) => fileMap[path] || fileMap[path.split("/").pop()];
+  return {
+    async range(path, start, end) {
+      const f = pick2(path);
+      if (!f) throw new Error(`file not provided: ${path}`);
+      return await f.slice(start, end).arrayBuffer();
+    },
+    async text(path) {
+      const f = pick2(path);
+      if (!f) throw new Error(`file not provided: ${path}`);
+      return await f.text();
+    }
+  };
+}
+
+// src/services/adapter_registry.js
+var AdapterRegistry = class {
+  constructor() {
+    this.adapters = { none: null };
+  }
+  add(name, modules) {
+    this.adapters[name] = { modules };
+    return this.adapters[name];
+  }
+  get(name) {
+    return this.adapters[name] || null;
+  }
+  applyToRuntime(name, rt2) {
+    const adapter = this.get(name);
+    if (adapter) rt2.setLora(adapter);
+    else rt2.clearLora();
+    return adapter;
+  }
+};
+
+// src/services/generation_controller.js
+var GenerationController = class {
+  constructor({ session: session2, adapters: adapters2, systemPrompt, log: log2 = () => {
+  } }) {
+    this.session = session2;
+    this.adapters = adapters2;
+    this.systemPrompt = systemPrompt;
+    this.log = log2;
+  }
+  async runTriage({ adapterName, report, outputNode, maxTemperature = 0 }) {
+    const rt2 = this.session.rt;
+    if (!rt2) return;
+    outputNode.textContent = "";
+    const node = document.createTextNode("");
+    outputNode.appendChild(node);
+    this.adapters.applyToRuntime(adapterName, rt2);
+    this.log(`generating (adapter=${adapterName})\u2026`);
+    const messages = [{ role: "system", content: this.systemPrompt }, { role: "user", content: report }];
+    const t0 = performance.now();
+    let n = 0;
+    for await (const delta of this.session.generate(messages, { maxTokens: rt2.maxCtx, temperature: maxTemperature })) {
+      node.appendData(delta);
+      n++;
+    }
+    const dt = (performance.now() - t0) / 1e3;
+    this.log(`done: ${n} tokens in ${dt.toFixed(1)}s (${(n / dt).toFixed(1)} tok/s) adapter=${adapterName}`);
+  }
+};
+
 // src/qwgpu/kernels.js
 var GEMV = `
 enable subgroups;
@@ -34765,6 +35033,39 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   if (sgid == 0u) { part[lid.x / sgsz] = s; }
   workgroupBarrier();
   if (lid.x == 0u) { let nsg=(64u+sgsz-1u)/sgsz; var o=0.0; for(var i=0u;i<nsg;i=i+1u){o=o+part[i];} d[r]=o; }
+}`;
+var LORA_A_BATCH = `
+enable subgroups;
+@group(0) @binding(0) var<storage,read> x: array<f32>;       // [T][K]
+@group(0) @binding(1) var<storage,read> A: array<f32>;       // [rank][K]
+@group(0) @binding(2) var<storage,read_write> d: array<f32>; // [T][rank]
+@group(0) @binding(3) var<uniform> m: vec4<u32>;             // K, rank, T, _
+var<workgroup> part: array<f32,64>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
+  let r = wid.x; let t = wid.y; let K = m.x; let rank = m.y; if (r >= rank || t >= m.z) { return; }
+  let xb = t*K; let ab = r*K; var acc = 0.0;
+  for (var k = lid.x; k < K; k = k + 64u) { acc = acc + x[xb + k]*A[ab + k]; }
+  let s = subgroupAdd(acc);
+  if (sgid == 0u) { part[lid.x / sgsz] = s; }
+  workgroupBarrier();
+  if (lid.x == 0u) { let nsg=(64u+sgsz-1u)/sgsz; var o=0.0; for(var i=0u;i<nsg;i=i+1u){o=o+part[i];} d[t*rank + r]=o; }
+}`;
+var LORA_B_ADD_T = `
+struct Meta { T:u32, N:u32, rank:u32, pad:u32, scale:f32, p1:f32, p2:f32, p3:f32 };
+@group(0) @binding(0) var<storage,read> d: array<f32>;        // [T][rank]
+@group(0) @binding(1) var<storage,read> B: array<f32>;        // [rank][N]
+@group(0) @binding(2) var<storage,read_write> Y: array<f32>;  // [T][N]
+@group(0) @binding(3) var<uniform> m: Meta;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let total = m.T * m.N; let stride = nwg.x * 256u;
+  for (var i = gid.x; i < total; i = i + stride) {
+    let t = i / m.N; let n = i % m.N; var acc = 0.0;
+    for (var r = 0u; r < m.rank; r = r + 1u) { acc = acc + d[t*m.rank + r] * B[r*m.N + n]; }
+    Y[i] = Y[i] + m.scale * acc;
+  }
 }`;
 var RMSNORM = `
 @group(0) @binding(0) var<storage,read> x: array<f32>;
@@ -35086,6 +35387,135 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   }
 }`;
 
+// src/qwgpu/dispatch_plan.js
+function createDispatchPlan(schema) {
+  return {
+    embed: schema.embed,
+    finalNorm: schema.finalNorm,
+    layers: schema.layers.map((layer) => ({
+      index: layer.index,
+      inputNorm: layer.inputNorm.name,
+      postAttentionNorm: layer.postAttentionNorm.name,
+      q: {
+        weight: layer.projections.q.name,
+        bias: layer.biases.q?.name || null,
+        loraKey: layer.projections.q.loraKey
+      },
+      k: {
+        weight: layer.projections.k.name,
+        bias: layer.biases.k?.name || null,
+        loraKey: layer.projections.k.loraKey
+      },
+      v: {
+        weight: layer.projections.v.name,
+        bias: layer.biases.v?.name || null,
+        loraKey: layer.projections.v.loraKey
+      },
+      o: {
+        weight: layer.projections.o.name,
+        bias: null,
+        loraKey: layer.projections.o.loraKey
+      },
+      gate: {
+        weight: layer.projections.gate.name,
+        bias: null,
+        loraKey: layer.projections.gate.loraKey
+      },
+      up: {
+        weight: layer.projections.up.name,
+        bias: null,
+        loraKey: layer.projections.up.loraKey
+      },
+      down: {
+        weight: layer.projections.down.name,
+        bias: null,
+        loraKey: layer.projections.down.loraKey
+      }
+    }))
+  };
+}
+
+// src/qwgpu/safetensors_loader.js
+function decodeBf16ToF32(u8, numel) {
+  const u16 = new Uint16Array(u8.buffer, u8.byteOffset, numel);
+  const out = new Float32Array(numel);
+  const o32 = new Uint32Array(out.buffer);
+  for (let i = 0; i < numel; i++) o32[i] = u16[i] << 16;
+  return out;
+}
+function decodeF16ToF32(u8, numel) {
+  const u16 = new Uint16Array(u8.buffer, u8.byteOffset, numel);
+  const out = new Float32Array(numel);
+  for (let i = 0; i < numel; i++) {
+    const h = u16[i], s = (h & 32768) >> 15, e = (h & 31744) >> 10, f = h & 1023;
+    if (e === 0) out[i] = (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+    else if (e === 31) out[i] = f ? NaN : s ? -Infinity : Infinity;
+    else out[i] = (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+  }
+  return out;
+}
+function decodeF32(u8, numel) {
+  return new Float32Array(u8.buffer.slice(u8.byteOffset, u8.byteOffset + numel * 4));
+}
+var DECODERS = {
+  BF16: decodeBf16ToF32,
+  F16: decodeF16ToF32,
+  FP16: decodeF16ToF32,
+  F32: decodeF32,
+  FP32: decodeF32
+};
+async function loadIndex(reader) {
+  try {
+    const idx = JSON.parse(await reader.text("model.safetensors.index.json"));
+    return { weightMap: idx.weight_map || {}, shards: [...new Set(Object.values(idx.weight_map || {}))] };
+  } catch {
+    return { weightMap: null, shards: ["model.safetensors"] };
+  }
+}
+function shardPlan(shards, weightMap, names) {
+  if (!weightMap || !names) return new Map(shards.map((shard) => [shard, null]));
+  const plan = /* @__PURE__ */ new Map();
+  for (const name of names) {
+    const shard = weightMap[name];
+    if (!shard) continue;
+    if (!plan.has(shard)) plan.set(shard, /* @__PURE__ */ new Set());
+    plan.get(shard).add(name);
+  }
+  return plan;
+}
+async function streamSafetensors(source, { names = null, onTensor, onProgress = () => {
+} } = {}) {
+  if (!onTensor) throw new Error("streamSafetensors requires onTensor");
+  const reader = typeof source === "string" ? urlReader(source) : source;
+  const { weightMap, shards } = await loadIndex(reader);
+  const plan = shardPlan(shards, weightMap, names);
+  let visited = 0;
+  const total = names?.size || 0;
+  for (const [shard, wantedInShard] of plan) {
+    const lenBuf = await reader.range(shard, 0, 8);
+    const headerLen = Number(new DataView(lenBuf).getBigUint64(0, true));
+    const hdrBuf = await reader.range(shard, 8, 8 + headerLen);
+    const header = JSON.parse(new TextDecoder().decode(new Uint8Array(hdrBuf)));
+    const dataStart = 8 + headerLen;
+    const allNames = Object.keys(header).filter((k2) => k2 !== "__metadata__");
+    const tensorNames = wantedInShard ? allNames.filter((n) => wantedInShard.has(n)) : names ? allNames.filter((n) => names.has(n)) : allNames;
+    for (const name of tensorNames) {
+      const t = header[name];
+      if (!t) continue;
+      const dtype = String(t.dtype || "").toUpperCase();
+      const dec = DECODERS[dtype];
+      if (!dec) throw new Error(`unsupported dtype ${dtype} for ${name}`);
+      const numel = t.shape.reduce((a, b) => a * b, 1);
+      const [s, e] = t.data_offsets;
+      const buf = await reader.range(shard, dataStart + s, dataStart + e);
+      const data = dec(new Uint8Array(buf), numel);
+      await onTensor({ name, shape: t.shape, dtype, data, shard });
+      visited++;
+      onProgress(name, total ? Math.min(0.95, visited / total) : 0.3);
+    }
+  }
+}
+
 // src/qwgpu/quantize.js
 function quantizeInt8RowMajor(f322, outDim, inDim) {
   const scale = new Float32Array(outDim);
@@ -35146,40 +35576,128 @@ function quantizeInt4Group(f322, outDim, inDim, group = 128) {
   return { packed, scale, groupsPerRow };
 }
 
-// src/readers.js
-function urlReader(baseUrl, headers = {}) {
-  const base = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
-  return {
-    async range(path, start, end) {
-      const r = await fetch(base + path, { headers: { ...headers, Range: `bytes=${start}-${end - 1}` } });
-      if (!r.ok && r.status !== 206) throw new Error(`range ${path} ${start}-${end}: ${r.status}`);
-      return await r.arrayBuffer();
-    },
-    async text(path) {
-      const r = await fetch(base + path, { headers });
-      if (!r.ok) throw new Error(`fetch ${path}: ${r.status}`);
-      return await r.text();
+// src/qwgpu/model_uploader.js
+var ModelUploader = class {
+  constructor({ schema, q, q4, bufs, uploadF32, uploadU32, groupSize = 128 }) {
+    this.schema = schema;
+    this.q = q;
+    this.q4 = q4;
+    this.bufs = bufs;
+    this.uploadF32 = uploadF32;
+    this.uploadU32 = uploadU32;
+    this.groupSize = groupSize;
+    this.seen = /* @__PURE__ */ new Set();
+  }
+  visit({ name, shape, data }) {
+    const desc = this.schema.validateTensor(name, shape);
+    if (!desc) return;
+    if (this.seen.has(name)) throw new Error(`duplicate tensor ${name}`);
+    if (desc.quant === "int8") {
+      const { packed, scale } = quantizeInt8RowMajor(data, shape[0], shape[1]);
+      this.q[name] = { w: this.uploadU32(packed), scale: this.uploadF32(scale), N: shape[0], K: shape[1] };
+    } else if (desc.quant === "int4") {
+      const { packed, scale, groupsPerRow } = quantizeInt4Group(data, shape[0], shape[1], this.groupSize);
+      this.q4[name] = { w: this.uploadU32(packed), scale: this.uploadF32(scale), N: shape[0], K: shape[1], gpr: groupsPerRow, desc };
+    } else if (desc.quant === "f32") {
+      this.bufs[name] = this.uploadF32(data);
+    } else {
+      throw new Error(`unsupported quant mode ${desc.quant} for ${name}`);
     }
-  };
-}
-function hfReader(repo, token = "", rev = "main") {
-  return urlReader(`https://huggingface.co/${repo}/resolve/${rev}`, token ? { Authorization: `Bearer ${token}` } : {});
-}
-function fileReader(fileMap) {
-  const pick2 = (path) => fileMap[path] || fileMap[path.split("/").pop()];
-  return {
-    async range(path, start, end) {
-      const f = pick2(path);
-      if (!f) throw new Error(`file not provided: ${path}`);
-      return await f.slice(start, end).arrayBuffer();
-    },
-    async text(path) {
-      const f = pick2(path);
-      if (!f) throw new Error(`file not provided: ${path}`);
-      return await f.text();
+    this.seen.add(name);
+  }
+  finalize() {
+    this.schema.assertComplete(this.seen);
+  }
+};
+
+// src/qwgpu/buffer_pool.js
+var GPUBufferPool = class {
+  constructor(device, { cacheBindGroups = true } = {}) {
+    this.dev = device;
+    this.cacheBindGroups = cacheBindGroups;
+    this.uniformPool = [];
+    this.uniformIdx = 0;
+    this.staticUniforms = /* @__PURE__ */ new Map();
+    this.bindGroups = /* @__PURE__ */ new Map();
+    this.sensitiveBindGroups = /* @__PURE__ */ new Set();
+    this.bufferIds = /* @__PURE__ */ new WeakMap();
+    this.pipelineIds = /* @__PURE__ */ new WeakMap();
+    this.nextBufferId = 1;
+    this.nextPipelineId = 1;
+  }
+  buffer(size, usage) {
+    return this.dev.createBuffer({ size, usage });
+  }
+  uploadF32(arr, usage) {
+    const b = this.buffer(arr.byteLength, usage);
+    this.dev.queue.writeBuffer(b, 0, arr);
+    return b;
+  }
+  uploadU32(arr, usage) {
+    const b = this.buffer(arr.byteLength, usage);
+    this.dev.queue.writeBuffer(b, 0, arr);
+    return b;
+  }
+  dynamicUniform(arr, usage) {
+    let b = this.uniformPool[this.uniformIdx];
+    if (!b) {
+      b = this.buffer(32, usage);
+      this.uniformPool[this.uniformIdx] = b;
     }
-  };
-}
+    this.uniformIdx++;
+    this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
+    return b;
+  }
+  resetUniforms() {
+    this.uniformIdx = 0;
+  }
+  staticUniform(key, arr, usage) {
+    let b = this.staticUniforms.get(key);
+    if (!b) {
+      b = this.buffer(32, usage);
+      this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
+      this.staticUniforms.set(key, b);
+    }
+    return b;
+  }
+  idForBuffer(buffer) {
+    let id = this.bufferIds.get(buffer);
+    if (!id) {
+      id = this.nextBufferId++;
+      this.bufferIds.set(buffer, id);
+    }
+    return id;
+  }
+  idForPipeline(pipe) {
+    let id = this.pipelineIds.get(pipe);
+    if (!id) {
+      id = this.nextPipelineId++;
+      this.pipelineIds.set(pipe, id);
+    }
+    return id;
+  }
+  uncachedBindGroup(pipe, buffers) {
+    return this.dev.createBindGroup({
+      layout: pipe.getBindGroupLayout(0),
+      entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } }))
+    });
+  }
+  cachedBindGroup(pipe, buffers, key, { sensitive = false } = {}) {
+    if (!this.cacheBindGroups || !key) return this.uncachedBindGroup(pipe, buffers);
+    const fullKey = `${this.idForPipeline(pipe)}:${key}:${buffers.map((b) => this.idForBuffer(b)).join(",")}`;
+    let bg = this.bindGroups.get(fullKey);
+    if (!bg) {
+      bg = this.uncachedBindGroup(pipe, buffers);
+      this.bindGroups.set(fullKey, bg);
+      if (sensitive) this.sensitiveBindGroups.add(fullKey);
+    }
+    return bg;
+  }
+  clearSensitiveBindGroups() {
+    for (const key of this.sensitiveBindGroups) this.bindGroups.delete(key);
+    this.sensitiveBindGroups.clear();
+  }
+};
 
 // src/qwgpu/runtime.js
 var STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
@@ -35193,36 +35711,26 @@ var QwenWGPU = class {
     this.lora = null;
     this.bufs = {};
     this.opts = opts;
+    this.pool = new GPUBufferPool(device, { cacheBindGroups: opts.cacheBindGroups !== false });
+    this._loraEpoch = 0;
   }
   _buf(size, usage = STORAGE) {
-    return this.dev.createBuffer({ size, usage });
+    return this.pool.buffer(size, usage);
   }
   _f32(arr, usage = STORAGE) {
-    const b = this._buf(arr.byteLength, usage);
-    this.dev.queue.writeBuffer(b, 0, arr);
-    return b;
+    return this.pool.uploadF32(arr, usage);
   }
   _u32(arr) {
-    const b = this._buf(arr.byteLength, STORAGE);
-    this.dev.queue.writeBuffer(b, 0, arr);
-    return b;
+    return this.pool.uploadU32(arr, STORAGE);
   }
   _uni(arr) {
-    if (!this._uniPool) {
-      this._uniPool = [];
-      this._uniIdx = 0;
-    }
-    let b = this._uniPool[this._uniIdx];
-    if (!b) {
-      b = this._buf(32, UNIFORM);
-      this._uniPool[this._uniIdx] = b;
-    }
-    this._uniIdx++;
-    this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
-    return b;
+    return this.pool.dynamicUniform(arr, UNIFORM);
+  }
+  _staticUni(key, arr) {
+    return this.pool.staticUniform(key, arr, UNIFORM);
   }
   _resetUni() {
-    this._uniIdx = 0;
+    this.pool.resetUniforms();
   }
   _pipe(code) {
     const m = this.dev.createShaderModule({ code });
@@ -35231,7 +35739,7 @@ var QwenWGPU = class {
   // `source` is a base URL string OR a reader { range, text } (e.g. hfReader/fileReader).
   async build(source, onProgress = () => {
   }) {
-    const dev2 = this.dev, c = this.cfg;
+    const dev = this.dev, c = this.cfg;
     this.CHUNK = 128;
     this.MAXBATCH = 16;
     this.maxCtx = this.opts.maxCtx || 8192;
@@ -35239,6 +35747,8 @@ var QwenWGPU = class {
     this.pipes = {
       gemv: this._pipe(GEMV),
       loraA: this._pipe(LORA_A),
+      loraABatch: this._pipe(LORA_A_BATCH),
+      loraBAddT: this._pipe(LORA_B_ADD_T),
       rms: this._pipe(RMSNORM),
       rope: this._pipe(ROPE),
       attnP: this._pipe(ATTN_PARTIAL),
@@ -35255,35 +35765,28 @@ var QwenWGPU = class {
       embedT: this._pipe(EMBED_T),
       attnPrefill: this._pipe(ATTN_PREFILL)
     };
-    onProgress("loading f32 weights", 0);
-    const W = await this._loadRaw(source, onProgress);
-    onProgress("quantizing to int8 + uploading", 0.5);
+    onProgress("streaming + quantizing weights", 0);
+    this.schema = createQwenSchema(c);
+    this.plan = createDispatchPlan(this.schema);
     this.q = {};
     this.q4 = {};
-    const quant4 = (name) => {
-      const t = W[name];
-      const { packed, scale, groupsPerRow } = quantizeInt4Group(t.data, t.shape[0], t.shape[1], 128);
-      this.q4[name] = { w: this._u32(packed), scale: this._f32(scale), N: t.shape[0], K: t.shape[1], gpr: groupsPerRow };
-    };
-    const quant = (name) => {
-      const t = W[name];
-      const { packed, scale } = quantizeInt8RowMajor(t.data, t.shape[0], t.shape[1]);
-      this.q[name] = { w: this._u32(packed), scale: this._f32(scale), N: t.shape[0], K: t.shape[1] };
-    };
-    const f32buf = (name) => {
-      this.bufs[name] = this._f32(W[name].data);
-    };
-    quant("model.embed_tokens.weight");
-    f32buf("model.norm.weight");
-    const proj = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"];
-    for (let i = 0; i < c.numLayers; i++) {
-      const p = `model.layers.${i}`;
-      f32buf(`${p}.input_layernorm.weight`);
-      f32buf(`${p}.post_attention_layernorm.weight`);
-      for (const s of proj) quant4(`${p}.${s}.weight`);
-      for (const b of ["q", "k", "v"]) f32buf(`${p}.self_attn.${b}_proj.bias`);
-      if (i % 6 === 0) await new Promise((r) => setTimeout(r, 0));
-    }
+    const uploader = new ModelUploader({
+      schema: this.schema,
+      q: this.q,
+      q4: this.q4,
+      bufs: this.bufs,
+      uploadF32: (arr) => this._f32(arr),
+      uploadU32: (arr) => this._u32(arr)
+    });
+    await streamSafetensors(source, {
+      names: this.schema.expectedNames,
+      onProgress,
+      onTensor: async (tensor) => {
+        uploader.visit(tensor);
+        if (uploader.seen.size % 48 === 0) await new Promise((r) => setTimeout(r, 0));
+      }
+    });
+    uploader.finalize();
     this._buildRope(this.maxCtx);
     this.kc = [], this.vc = [];
     const kvSize = c.numKVHeads * this.maxCtx * c.headDim * 4;
@@ -35314,38 +35817,9 @@ var QwenWGPU = class {
     this.idsRead = this._buf(this.MAXBATCH * 4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
     this.sT = null;
     this.sTcap = 0;
+    this._initStaticUniforms();
     onProgress("ready", 1);
-    this._uniCache = {};
     return this;
-  }
-  async _loadRaw(source, onProgress) {
-    const reader = typeof source === "string" ? urlReader(source) : source;
-    const out = {};
-    const idx = JSON.parse(await reader.text("model.safetensors.index.json"));
-    const shards = [...new Set(Object.values(idx.weight_map))];
-    const dec = (u8, n) => {
-      const u16 = new Uint16Array(u8.buffer, u8.byteOffset, n);
-      const o = new Float32Array(n);
-      const o32 = new Uint32Array(o.buffer);
-      for (let i = 0; i < n; i++) o32[i] = u16[i] << 16;
-      return o;
-    };
-    for (const shard of shards) {
-      const lenBuf = await reader.range(shard, 0, 8);
-      const hl = Number(new DataView(lenBuf).getBigUint64(0, true));
-      const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(await reader.range(shard, 8, 8 + hl))));
-      const dataStart = 8 + hl;
-      for (const name of Object.keys(hdr)) {
-        if (name === "__metadata__") continue;
-        const t = hdr[name];
-        const numel = t.shape.reduce((a, b) => a * b, 1);
-        const [s, e] = t.data_offsets;
-        const buf = await reader.range(shard, dataStart + s, dataStart + e);
-        out[name] = { data: dec(new Uint8Array(buf), numel), shape: t.shape };
-        onProgress(name, 0.3);
-      }
-    }
-    return out;
   }
   _buildRope(maxSeq) {
     const { headDim, ropeTheta } = this.cfg;
@@ -35363,15 +35837,63 @@ var QwenWGPU = class {
     this.ropeSin = this._f32(sin);
     this._ropeRow = headDim * 4;
   }
+  _initStaticUniforms() {
+    const c = this.cfg;
+    const rms = new ArrayBuffer(8);
+    const rmsDv = new DataView(rms);
+    rmsDv.setFloat32(0, c.hiddenSize, true);
+    rmsDv.setFloat32(4, c.rmsNormEps, true);
+    this.u = {
+      rmsHidden: this._staticUni(`rms:${c.hiddenSize}:${c.rmsNormEps}`, new Uint8Array(rms)),
+      addHidden: this._staticUni(`u32:${c.hiddenSize}`, new Uint32Array([c.hiddenSize])),
+      siluIntermediate: this._staticUni(`u32:${c.intermediateSize}`, new Uint32Array([c.intermediateSize])),
+      embedBuf: this._staticUni(`embedBuf:${c.hiddenSize}`, new Uint32Array([c.hiddenSize])),
+      argmax: this._staticUni(`argmax:${c.vocabSize}`, new Uint32Array([c.vocabSize]))
+    };
+  }
+  _gemvMeta(q, biasBuf, mod) {
+    const gx = Math.min(q.N, 65535);
+    const meta = new ArrayBuffer(32);
+    const dv = new DataView(meta);
+    dv.setUint32(0, q.K, true);
+    dv.setUint32(4, q.N, true);
+    dv.setUint32(8, mod ? mod.rank : 0, true);
+    dv.setUint32(12, biasBuf ? 1 : 0, true);
+    dv.setUint32(16, mod ? 1 : 0, true);
+    dv.setUint32(20, gx, true);
+    dv.setFloat32(24, mod ? mod.scale : 0, true);
+    return { gx, gy: Math.ceil(q.N / gx), buf: this._staticUni(`gemv:${q.K}:${q.N}:${biasBuf ? 1 : 0}:${mod ? `${this._loraEpoch}:${mod.rank}:${mod.scale}` : "base"}`, new Uint8Array(meta)) };
+  }
+  _gemv4Meta(q, biasBuf, mod) {
+    const gx = Math.min(q.N, 65535);
+    const meta = new ArrayBuffer(32);
+    const dv = new DataView(meta);
+    dv.setUint32(0, q.K, true);
+    dv.setUint32(4, q.N, true);
+    dv.setUint32(8, mod ? mod.rank : 0, true);
+    dv.setUint32(12, biasBuf ? 1 : 0, true);
+    dv.setUint32(16, mod ? 1 : 0, true);
+    dv.setUint32(20, gx, true);
+    dv.setFloat32(24, mod ? mod.scale : 0, true);
+    dv.setUint32(28, q.gpr, true);
+    return { gx, gy: Math.ceil(q.N / gx), buf: this._staticUni(`gemv4:${q.K}:${q.N}:${q.gpr}:${biasBuf ? 1 : 0}:${mod ? `${this._loraEpoch}:${mod.rank}:${mod.scale}` : "base"}`, new Uint8Array(meta)) };
+  }
   setLora(adapter) {
     this.lora = adapter;
+    this._loraEpoch++;
+    this.pool.clearSensitiveBindGroups();
   }
   // {modules: {key:{A,B,rank,scale}}}  A:[K][rank], B:[rank][N] f32 GPUBuffers
   clearLora() {
     this.lora = null;
+    this._loraEpoch++;
+    this.pool.clearSensitiveBindGroups();
   }
   _bg(pipe, buffers) {
-    return this.dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } })) });
+    return this.pool.uncachedBindGroup(pipe, buffers);
+  }
+  _bgCached(pipe, buffers, key, opts) {
+    return this.pool.cachedBindGroup(pipe, buffers, key, opts);
   }
   _dispatch(enc, pipe, bg, gx, gy = 1, cat2) {
     let ts2;
@@ -35412,50 +35934,39 @@ var QwenWGPU = class {
     return sums;
   }
   // y = int8-GEMV(x, q) [+bias] [+lora]. q={w,scale,N,K}. moduleKey for LoRA lookup.
-  gemv(enc, xBuf, q, yBuf, biasBuf, moduleKey2) {
-    const mod = this.lora?.modules?.[moduleKey2];
+  gemv(enc, xBuf, q, yBuf, biasBuf, moduleKey) {
+    const mod = this.lora?.modules?.[moduleKey];
     if (mod) {
-      const bgA = this._bg(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, this._uni(new Uint32Array([q.K, mod.rank]))]);
+      const uA = this._staticUni(`loraA:${this._loraEpoch}:${q.K}:${mod.rank}`, new Uint32Array([q.K, mod.rank]));
+      const bgA = this._bgCached(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, uA], `loraA:${moduleKey}:${this._loraEpoch}`, { sensitive: true });
       this._dispatch(enc, this.pipes.loraA, bgA, mod.rank, 1, "loraA");
     }
-    const meta = new ArrayBuffer(32);
-    const dv = new DataView(meta);
-    dv.setUint32(0, q.K, true);
-    dv.setUint32(4, q.N, true);
-    dv.setUint32(8, mod ? mod.rank : 0, true);
-    dv.setUint32(12, biasBuf ? 1 : 0, true);
-    dv.setUint32(16, mod ? 1 : 0, true);
-    const gx = Math.min(q.N, 65535), gy = Math.ceil(q.N / gx);
-    dv.setUint32(20, gx, true);
-    dv.setFloat32(24, mod ? mod.scale : 0, true);
-    const bg = this._bg(this.pipes.gemv, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, this._uni(new Uint8Array(meta))]);
-    this._dispatch(enc, this.pipes.gemv, bg, gx, gy, `gemv:${q.N}x${q.K}`);
+    const meta = this._gemvMeta(q, biasBuf, mod);
+    const key = `gemv:${moduleKey || "base"}:${q.K}:${q.N}:${biasBuf ? 1 : 0}:${mod ? this._loraEpoch : 0}`;
+    const bg = this._bgCached(this.pipes.gemv, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, meta.buf], key, { sensitive: !!mod });
+    this._dispatch(enc, this.pipes.gemv, bg, meta.gx, meta.gy, `gemv:${q.N}x${q.K}`);
   }
-  gemv4(enc, xBuf, q, yBuf, biasBuf, moduleKey2) {
-    const mod = this.lora?.modules?.[moduleKey2];
+  gemv4(enc, xBuf, q, yBuf, biasBuf, moduleKey) {
+    const mod = this.lora?.modules?.[moduleKey];
     if (mod) {
-      this._dispatch(enc, this.pipes.loraA, this._bg(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, this._uni(new Uint32Array([q.K, mod.rank]))]), mod.rank, 1, "loraA");
+      const uA = this._staticUni(`loraA:${this._loraEpoch}:${q.K}:${mod.rank}`, new Uint32Array([q.K, mod.rank]));
+      this._dispatch(enc, this.pipes.loraA, this._bgCached(this.pipes.loraA, [xBuf, mod.A, this.s.loraD, uA], `loraA:${moduleKey}:${this._loraEpoch}`, { sensitive: true }), mod.rank, 1, "loraA");
     }
-    const gx = Math.min(q.N, 65535), gy = Math.ceil(q.N / gx);
-    const meta = new ArrayBuffer(32);
-    const dv = new DataView(meta);
-    dv.setUint32(0, q.K, true);
-    dv.setUint32(4, q.N, true);
-    dv.setUint32(8, mod ? mod.rank : 0, true);
-    dv.setUint32(12, biasBuf ? 1 : 0, true);
-    dv.setUint32(16, mod ? 1 : 0, true);
-    dv.setUint32(20, gx, true);
-    dv.setFloat32(24, mod ? mod.scale : 0, true);
-    dv.setUint32(28, q.gpr, true);
-    const bg = this._bg(this.pipes.gemv4, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, this._uni(new Uint8Array(meta))]);
-    this._dispatch(enc, this.pipes.gemv4, bg, gx, gy, `g4:${q.N}x${q.K}`);
+    const meta = this._gemv4Meta(q, biasBuf, mod);
+    const key = `gemv4:${moduleKey || "base"}:${q.K}:${q.N}:${q.gpr}:${biasBuf ? 1 : 0}:${mod ? this._loraEpoch : 0}`;
+    const bg = this._bgCached(this.pipes.gemv4, [xBuf, q.w, q.scale, biasBuf || this.s.dummy, this.s.loraD, mod ? mod.B : this.s.dummy, yBuf, meta.buf], key, { sensitive: !!mod });
+    this._dispatch(enc, this.pipes.gemv4, bg, meta.gx, meta.gy, `g4:${q.N}x${q.K}`);
   }
   rms(enc, xBuf, gBuf, yBuf, K2) {
-    const u = new ArrayBuffer(8);
-    const dv = new DataView(u);
-    dv.setFloat32(0, K2, true);
-    dv.setFloat32(4, this.cfg.rmsNormEps, true);
-    this._dispatch(enc, this.pipes.rms, this._bg(this.pipes.rms, [xBuf, gBuf, yBuf, this._uni(new Uint8Array(u))]), 1, 1, "rms");
+    let u = this.u?.rmsHidden;
+    if (!u || K2 !== this.cfg.hiddenSize) {
+      const raw = new ArrayBuffer(8);
+      const dv = new DataView(raw);
+      dv.setFloat32(0, K2, true);
+      dv.setFloat32(4, this.cfg.rmsNormEps, true);
+      u = this._staticUni(`rms:${K2}:${this.cfg.rmsNormEps}`, new Uint8Array(raw));
+    }
+    this._dispatch(enc, this.pipes.rms, this._bgCached(this.pipes.rms, [xBuf, gBuf, yBuf, u], `rms:${K2}`), 1, 1, "rms");
   }
   rope(enc, xBuf, pos, nHeads) {
     this._dispatch(enc, this.pipes.rope, this._bg(this.pipes.rope, [xBuf, this.ropeCos, this.ropeSin, this._uni(new Uint32Array([nHeads, this.cfg.headDim, pos]))]), Math.ceil(nHeads * (this.cfg.headDim / 2) / 256), 1, "rope");
@@ -35481,41 +35992,45 @@ var QwenWGPU = class {
   step(enc, tokenId, pos) {
     const c = this.cfg, S = this.s, hd = c.headDim, kvd = c.numKVHeads * hd;
     for (let i = 0; i < c.numLayers; i++) {
-      const p = `model.layers.${i}`;
-      this.rms(enc, S.hidden, this.bufs[`${p}.input_layernorm.weight`], S.normed, c.hiddenSize);
-      this.gemv4(enc, S.normed, this.q4[`${p}.self_attn.q_proj.weight`], S.q, this.bufs[`${p}.self_attn.q_proj.bias`], `layers.${i}.self_attn.q_proj`);
-      this.gemv4(enc, S.normed, this.q4[`${p}.self_attn.k_proj.weight`], S.k, this.bufs[`${p}.self_attn.k_proj.bias`], `layers.${i}.self_attn.k_proj`);
-      this.gemv4(enc, S.normed, this.q4[`${p}.self_attn.v_proj.weight`], S.v, this.bufs[`${p}.self_attn.v_proj.bias`], `layers.${i}.self_attn.v_proj`);
+      const L = this.plan.layers[i];
+      this.rms(enc, S.hidden, this.bufs[L.inputNorm], S.normed, c.hiddenSize);
+      this.gemv4(enc, S.normed, this.q4[L.q.weight], S.q, this.bufs[L.q.bias], L.q.loraKey);
+      this.gemv4(enc, S.normed, this.q4[L.k.weight], S.k, this.bufs[L.k.bias], L.k.loraKey);
+      this.gemv4(enc, S.normed, this.q4[L.v.weight], S.v, this.bufs[L.v.bias], L.v.loraKey);
       this.rope(enc, S.q, pos, c.numHeads);
       this.rope(enc, S.k, pos, c.numKVHeads);
       enc.copyBufferToBuffer(S.k, 0, this.kc[i], pos * kvd * 4, kvd * 4);
       enc.copyBufferToBuffer(S.v, 0, this.vc[i], pos * kvd * 4, kvd * 4);
       this.attn(enc, S.q, this.kc[i], this.vc[i], S.attn, pos + 1);
-      this.gemv4(enc, S.attn, this.q4[`${p}.self_attn.o_proj.weight`], S.tmp, null, `layers.${i}.self_attn.o_proj`);
+      this.gemv4(enc, S.attn, this.q4[L.o.weight], S.tmp, null, L.o.loraKey);
       this._addInto(enc, S.hidden, S.tmp, c.hiddenSize);
-      this.rms(enc, S.hidden, this.bufs[`${p}.post_attention_layernorm.weight`], S.normed, c.hiddenSize);
-      this.gemv4(enc, S.normed, this.q4[`${p}.mlp.gate_proj.weight`], S.tmp, null, `layers.${i}.mlp.gate_proj`);
-      this.gemv4(enc, S.normed, this.q4[`${p}.mlp.up_proj.weight`], S.tmp2, null, `layers.${i}.mlp.up_proj`);
+      this.rms(enc, S.hidden, this.bufs[L.postAttentionNorm], S.normed, c.hiddenSize);
+      this.gemv4(enc, S.normed, this.q4[L.gate.weight], S.tmp, null, L.gate.loraKey);
+      this.gemv4(enc, S.normed, this.q4[L.up.weight], S.tmp2, null, L.up.loraKey);
       this._siluMul(enc, S.tmp, S.tmp2, c.intermediateSize);
-      this.gemv4(enc, S.tmp, this.q4[`${p}.mlp.down_proj.weight`], S.normed, null, `layers.${i}.mlp.down_proj`);
+      this.gemv4(enc, S.tmp, this.q4[L.down.weight], S.normed, null, L.down.loraKey);
       this._addInto(enc, S.hidden, S.normed, c.hiddenSize);
     }
-    this.rms(enc, S.hidden, this.bufs["model.norm.weight"], S.normed, c.hiddenSize);
-    this.gemv(enc, S.normed, this.q["model.embed_tokens.weight"], S.logits, null, null);
+    this.rms(enc, S.hidden, this.bufs[this.plan.finalNorm.name], S.normed, c.hiddenSize);
+    this.gemv(enc, S.normed, this.q[this.plan.embed.name], S.logits, null, null);
   }
   _addInto(enc, yBuf, aBuf, n) {
-    this._dispatch(enc, this.pipes.add, this._bg(this.pipes.add, [aBuf, yBuf, this._uni(new Uint32Array([n]))]), Math.min(Math.ceil(n / 256), 65535), 1, "add");
+    const u = n === this.cfg.hiddenSize ? this.u.addHidden : this._uni(new Uint32Array([n]));
+    const bg = n === this.cfg.hiddenSize ? this._bgCached(this.pipes.add, [aBuf, yBuf, u], `add:${n}`) : this._bg(this.pipes.add, [aBuf, yBuf, u]);
+    this._dispatch(enc, this.pipes.add, bg, Math.min(Math.ceil(n / 256), 65535), 1, "add");
   }
   _siluMul(enc, gateBuf, upBuf, n) {
-    this._dispatch(enc, this.pipes.silu, this._bg(this.pipes.silu, [gateBuf, upBuf, this._uni(new Uint32Array([n]))]), Math.min(Math.ceil(n / 256), 65535), 1, "silu");
+    const u = n === this.cfg.intermediateSize ? this.u.siluIntermediate : this._uni(new Uint32Array([n]));
+    const bg = n === this.cfg.intermediateSize ? this._bgCached(this.pipes.silu, [gateBuf, upBuf, u], `silu:${n}`) : this._bg(this.pipes.silu, [gateBuf, upBuf, u]);
+    this._dispatch(enc, this.pipes.silu, bg, Math.min(Math.ceil(n / 256), 65535), 1, "silu");
   }
   embedRow(enc, id) {
-    const e = this.q["model.embed_tokens.weight"];
+    const e = this.q[this.plan.embed.name];
     this._dispatch(enc, this.pipes.embed, this._bg(this.pipes.embed, [e.w, e.scale, this.s.hidden, this._uni(new Uint32Array([id, this.cfg.hiddenSize]))]), Math.ceil(this.cfg.hiddenSize / 256), 1, "embed");
   }
   async argmaxLogits() {
     const enc = this.dev.createCommandEncoder();
-    this._dispatch(enc, this.pipes.argmax, this._bg(this.pipes.argmax, [this.s.logits, this.s.amax, this._uni(new Uint32Array([this.cfg.vocabSize]))]), 1);
+    this._dispatch(enc, this.pipes.argmax, this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], "argmax"), 1);
     const rb = this._buf(4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
     enc.copyBufferToBuffer(this.s.amax, 0, rb, 0, 4);
     this.dev.queue.submit([enc.finish()]);
@@ -35535,12 +36050,12 @@ var QwenWGPU = class {
   }
   // embed the token id held in s.amax (GPU-resident, from a prior argmax)
   embedFromBuf(enc) {
-    const e = this.q["model.embed_tokens.weight"];
-    this._dispatch(enc, this.pipes.embedBuf, this._bg(this.pipes.embedBuf, [e.w, e.scale, this.s.hidden, this.s.amax, this._uni(new Uint32Array([this.cfg.hiddenSize]))]), Math.ceil(this.cfg.hiddenSize / 256), 1, "embed");
+    const e = this.q[this.plan.embed.name];
+    this._dispatch(enc, this.pipes.embedBuf, this._bgCached(this.pipes.embedBuf, [e.w, e.scale, this.s.hidden, this.s.amax, this.u.embedBuf], "embedBuf"), Math.ceil(this.cfg.hiddenSize / 256), 1, "embed");
   }
   // argmax(logits) -> s.amax, within the given encoder (no submit/readback)
   argmaxInto(enc) {
-    this._dispatch(enc, this.pipes.argmax, this._bg(this.pipes.argmax, [this.s.logits, this.s.amax, this._uni(new Uint32Array([this.cfg.vocabSize]))]), 1, 1, "argmax");
+    this._dispatch(enc, this.pipes.argmax, this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], "argmax"), 1, 1, "argmax");
   }
   // GPU-resident batched greedy decode: chains embed->step->argmax->embed for K
   // tokens in ONE submit (no per-token CPU sync), reads back K ids once. Assumes
@@ -35563,12 +36078,28 @@ var QwenWGPU = class {
     this.idsRead.unmap();
     return ids;
   }
-  // ---- PREFILL (T>1): process the whole prompt at once via tiled GEMM. Base model
-  // only (no LoRA — caller falls back to sequential token() when an adapter is active).
-  gemm4(enc, aBuf, q, yBuf, T, biasBuf) {
+  // ---- PREFILL (T>1): process the whole prompt at once via tiled GEMM. If a LoRA
+  // adapter has the projection module, add its batched delta immediately after base GEMM.
+  gemm4(enc, aBuf, q, yBuf, T, biasBuf, moduleKey) {
     const meta = new Uint32Array([q.K, q.N, T, q.gpr, biasBuf ? 1 : 0, 0, 0, 0]);
     const bg = this._bg(this.pipes.gemm4, [aBuf, q.w, q.scale, biasBuf || this.s.dummy, yBuf, this._uni(meta)]);
     this._dispatch(enc, this.pipes.gemm4, bg, Math.ceil(q.N / 64), Math.ceil(T / 16), "gemm4");
+    const mod = this.lora?.modules?.[moduleKey];
+    if (mod) this.loraBatchDelta(enc, aBuf, yBuf, q, T, mod);
+  }
+  loraBatchDelta(enc, xBuf, yBuf, q, T, mod) {
+    const bgA = this._bg(this.pipes.loraABatch, [xBuf, mod.A, this.sT.loraD, this._uni(new Uint32Array([q.K, mod.rank, T, 0]))]);
+    this._dispatch(enc, this.pipes.loraABatch, bgA, mod.rank, T, "loraA:T");
+    const meta = new ArrayBuffer(32);
+    const dv = new DataView(meta);
+    dv.setUint32(0, T, true);
+    dv.setUint32(4, q.N, true);
+    dv.setUint32(8, mod.rank, true);
+    dv.setUint32(12, 0, true);
+    dv.setFloat32(16, mod.scale, true);
+    const groups = Math.min(Math.ceil(T * q.N / 256), 65535);
+    const bgB = this._bg(this.pipes.loraBAddT, [this.sT.loraD, mod.B, yBuf, this._uni(new Uint8Array(meta))]);
+    this._dispatch(enc, this.pipes.loraBAddT, bgB, groups, 1, "loraB:T");
   }
   rmsT(enc, xBuf, gBuf, yBuf, T, K2) {
     const u = new ArrayBuffer(8);
@@ -35586,8 +36117,8 @@ var QwenWGPU = class {
     this._dispatch(enc, this.pipes.attnPrefill, this._bg(this.pipes.attnPrefill, [qBuf, kc, vc, oBuf, this._uni(new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T]))]), c.numHeads, T, "attnPrefill");
   }
   // (re)allocate prefill scratch sized to T (grows as needed; only paid when prefilling).
-  _ensurePrefillScratch(T) {
-    if (this.sTcap >= T) return;
+  _ensurePrefillScratch(T, loraRank = 0) {
+    if (this.sTcap >= T && (this.sTLoraRank || 0) >= loraRank) return;
     if (this.sT) for (const k2 in this.sT) this.sT[k2].destroy();
     const c = this.cfg, H = c.hiddenSize, qd = c.numHeads * c.headDim, kvd = c.numKVHeads * c.headDim, I = c.intermediateSize;
     this.sT = {
@@ -35599,197 +36130,100 @@ var QwenWGPU = class {
       attn: this._buf(T * qd * 4),
       tmp: this._buf(T * I * 4),
       tmp2: this._buf(T * I * 4),
-      ids: this._buf(T * 4)
+      ids: this._buf(T * 4),
+      loraD: this._buf(Math.max(1, T * Math.max(1, loraRank)) * 4)
     };
     this.sTcap = T;
+    this.sTLoraRank = loraRank;
+  }
+  _activeMaxLoraRank() {
+    let rank = 0;
+    const mods = this.lora?.modules;
+    if (!mods) return 0;
+    for (const key of Object.keys(mods)) rank = Math.max(rank, mods[key].rank || 0);
+    return rank;
   }
   // Prefill the prompt (positions 0..T-1). Leaves last-row logits in s.logits and the
-  // KV cache populated, so decode continues from pos=T. T must be <= maxPrefillT and no LoRA.
+  // KV cache populated, so decode continues from pos=T. T must be <= maxPrefillT.
   prefillBatch(ids) {
     const c = this.cfg, S = this.s, T = ids.length, hd = c.headDim, kvd = c.numKVHeads * hd, H = c.hiddenSize;
     if (T > this.maxPrefillT) throw new Error(`prompt ${T} > maxPrefillT ${this.maxPrefillT}`);
     if (T > this.maxCtx) throw new Error(`prompt ${T} > maxCtx ${this.maxCtx}`);
-    this._ensurePrefillScratch(T);
+    this._ensurePrefillScratch(T, this._activeMaxLoraRank());
     const ST = this.sT;
     this._resetUni();
     this.dev.queue.writeBuffer(ST.ids, 0, new Uint32Array(ids));
     const enc = this.dev.createCommandEncoder();
-    const e = this.q["model.embed_tokens.weight"];
+    const e = this.q[this.plan.embed.name];
     this._dispatch(enc, this.pipes.embedT, this._bg(this.pipes.embedT, [e.w, e.scale, ST.hidden, ST.ids, this._uni(new Uint32Array([T, H]))]), Math.min(Math.ceil(T * H / 256), 65535), 1, "embedT");
     for (let i = 0; i < c.numLayers; i++) {
-      const p = `model.layers.${i}`;
-      this.rmsT(enc, ST.hidden, this.bufs[`${p}.input_layernorm.weight`], ST.normed, T, H);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.q_proj.weight`], ST.q, T, this.bufs[`${p}.self_attn.q_proj.bias`]);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.k_proj.weight`], ST.k, T, this.bufs[`${p}.self_attn.k_proj.bias`]);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.self_attn.v_proj.weight`], ST.v, T, this.bufs[`${p}.self_attn.v_proj.bias`]);
+      const L = this.plan.layers[i];
+      this.rmsT(enc, ST.hidden, this.bufs[L.inputNorm], ST.normed, T, H);
+      this.gemm4(enc, ST.normed, this.q4[L.q.weight], ST.q, T, this.bufs[L.q.bias], L.q.loraKey);
+      this.gemm4(enc, ST.normed, this.q4[L.k.weight], ST.k, T, this.bufs[L.k.bias], L.k.loraKey);
+      this.gemm4(enc, ST.normed, this.q4[L.v.weight], ST.v, T, this.bufs[L.v.bias], L.v.loraKey);
       this.ropeT(enc, ST.q, T, c.numHeads);
       this.ropeT(enc, ST.k, T, c.numKVHeads);
       enc.copyBufferToBuffer(ST.k, 0, this.kc[i], 0, T * kvd * 4);
       enc.copyBufferToBuffer(ST.v, 0, this.vc[i], 0, T * kvd * 4);
       this.attnPrefill(enc, ST.q, this.kc[i], this.vc[i], ST.attn, T);
-      this.gemm4(enc, ST.attn, this.q4[`${p}.self_attn.o_proj.weight`], ST.tmp, T, null);
+      this.gemm4(enc, ST.attn, this.q4[L.o.weight], ST.tmp, T, null, L.o.loraKey);
       this._addInto(enc, ST.hidden, ST.tmp, T * H);
-      this.rmsT(enc, ST.hidden, this.bufs[`${p}.post_attention_layernorm.weight`], ST.normed, T, H);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.mlp.gate_proj.weight`], ST.tmp, T, null);
-      this.gemm4(enc, ST.normed, this.q4[`${p}.mlp.up_proj.weight`], ST.tmp2, T, null);
+      this.rmsT(enc, ST.hidden, this.bufs[L.postAttentionNorm], ST.normed, T, H);
+      this.gemm4(enc, ST.normed, this.q4[L.gate.weight], ST.tmp, T, null, L.gate.loraKey);
+      this.gemm4(enc, ST.normed, this.q4[L.up.weight], ST.tmp2, T, null, L.up.loraKey);
       this._siluMul(enc, ST.tmp, ST.tmp2, T * c.intermediateSize);
-      this.gemm4(enc, ST.tmp, this.q4[`${p}.mlp.down_proj.weight`], ST.normed, T, null);
+      this.gemm4(enc, ST.tmp, this.q4[L.down.weight], ST.normed, T, null, L.down.loraKey);
       this._addInto(enc, ST.hidden, ST.normed, T * H);
     }
     enc.copyBufferToBuffer(ST.hidden, (T - 1) * H * 4, S.hidden, 0, H * 4);
-    this.rms(enc, S.hidden, this.bufs["model.norm.weight"], S.normed, H);
-    this.gemv(enc, S.normed, this.q["model.embed_tokens.weight"], S.logits, null, null);
+    this.rms(enc, S.hidden, this.bufs[this.plan.finalNorm.name], S.normed, H);
+    this.gemv(enc, S.normed, this.q[this.plan.embed.name], S.logits, null, null);
     this.dev.queue.submit([enc.finish()]);
   }
 };
 
-// src/config.js
-var QWEN25_3B = {
-  hiddenSize: 2048,
-  numLayers: 36,
-  numHeads: 16,
-  numKVHeads: 2,
-  headDim: 128,
-  intermediateSize: 11008,
-  vocabSize: 151936,
-  rmsNormEps: 1e-6,
-  ropeTheta: 1e6,
-  tieWordEmbeddings: true,
-  // qkv projections have a bias in Qwen2.5; o_proj and mlp do not.
-  attentionBias: true
-};
-
-// src/lora_gpu.js
-function parseSt(buf) {
-  const dv = new DataView(buf);
-  const hl = Number(dv.getBigUint64(0, true));
-  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, hl)));
-  return { header, dataStart: 8 + hl, u8: new Uint8Array(buf) };
-}
-function bf16f32(u8, off, n) {
-  const u16 = new Uint16Array(u8.buffer, u8.byteOffset + off, n);
-  const o = new Float32Array(n);
-  const o32 = new Uint32Array(o.buffer);
-  for (let i = 0; i < n; i++) o32[i] = u16[i] << 16;
-  return o;
-}
-function f32(u8, off, n) {
-  return new Float32Array(u8.buffer.slice(u8.byteOffset + off, u8.byteOffset + off + n * 4));
-}
-function readTensor(st2, name) {
-  const t = st2.header[name];
-  const n = t.shape.reduce((a, b) => a * b, 1);
-  const dt = t.dtype.toUpperCase();
-  const arr = dt === "BF16" ? bf16f32(st2.u8, st2.dataStart + t.data_offsets[0], n) : f32(st2.u8, st2.dataStart + t.data_offsets[0], n);
-  return { arr, shape: t.shape };
-}
-function moduleKey(name) {
-  const m = name.match(/layers\.(\d+)\.(self_attn|mlp)\.([a-z_]+?)(_proj)?\.(lora_[ABab])/i);
-  if (!m) return null;
-  return `layers.${m[1]}.${m[2]}.${m[3].replace(/_proj$/, "")}_proj`;
-}
-var isA = (name) => /lora_a/i.test(name);
-function transpose2d(arr, rows, cols) {
-  const o = new Float32Array(arr.length);
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) o[c * rows + r] = arr[r * cols + c];
-  return o;
-}
-async function loadLoraAdapterGPU(dev2, files, cfg) {
-  const stFile = files.find((f) => f.name.endsWith(".safetensors"));
-  if (!stFile) throw new Error("no .safetensors in adapter files");
-  const cfgFile = files.find((f) => /adapter_config\.json|config\.json/.test(f.name));
-  let rankCfg = 16, scaleCfg = null;
-  if (cfgFile) {
-    const c = JSON.parse(await cfgFile.text());
-    const lp = c.lora_parameters || {};
-    rankCfg = c.r ?? c.rank ?? c.lora_rank ?? lp.rank ?? rankCfg;
-    if (lp.scale != null) scaleCfg = lp.scale;
-    else if (c.lora_alpha != null) scaleCfg = c.lora_alpha / rankCfg;
-    else if (c.alpha != null) scaleCfg = c.alpha / rankCfg;
-  }
-  const st2 = parseSt(await stFile.arrayBuffer());
-  const names = Object.keys(st2.header).filter((k2) => k2 !== "__metadata__" && /lora_[abAB]/.test(k2));
-  const groups = {};
-  for (const nm of names) {
-    const key = moduleKey(nm);
-    if (!key) continue;
-    (groups[key] ||= {})[isA(nm) ? "A" : "B"] = readTensor(st2, nm);
-  }
-  const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-  const mk = (arr) => {
-    const b = dev2.createBuffer({ size: arr.byteLength, usage: S });
-    dev2.queue.writeBuffer(b, 0, arr);
-    return b;
-  };
-  const modules = {};
-  for (const key of Object.keys(groups)) {
-    const g = groups[key];
-    if (!g.A || !g.B) continue;
-    const r = Math.min(...g.A.shape, ...g.B.shape);
-    let Aarr = g.A.arr;
-    if (g.A.shape[0] !== r) Aarr = transpose2d(g.A.arr, g.A.shape[0], g.A.shape[1]);
-    let Barr = g.B.arr;
-    if (g.B.shape[0] !== r) Barr = transpose2d(g.B.arr, g.B.shape[0], g.B.shape[1]);
-    const scale = scaleCfg != null ? scaleCfg : 2;
-    modules[key] = { A: mk(Aarr), B: mk(Barr), rank: r, scale };
-  }
-  if (!Object.keys(modules).length) throw new Error("no LoRA modules matched layers.*.{self_attn,mlp}.*_proj");
-  const name = stFile.name.replace(/\.safetensors$/, "");
-  return { name, modules };
-}
-
-// src/main.js
-var $2 = (id) => document.getElementById(id);
-var log = (m) => {
-  const s = $2("status");
-  if (s) s.textContent = m;
-  console.log("[harness]", m);
-};
-var SYS = `You are a senior bug bounty triage analyst. Read the submission and assign exactly ONE disposition from: valid_impactful, valid_low, corroborated_surge, likely_duplicate, out_of_scope, theoretical_no_poc, self_inflicted, accepted_risk, slop. Estimate severity_estimate (critical/high/medium/low/none). Think step by step, then output a SINGLE JSON object on the last line with keys: disposition, severity_estimate, is_duplicate_risk, reasoning, questions_for_researcher, confidence. Output only valid JSON for that object.`;
-var rt2 = null;
-var dev = null;
-var tokenizer = null;
-var adapters = { none: null };
-async function initDevice() {
-  log("requesting WebGPU device\u2026");
+// src/services/device_service.js
+async function initWebGPUDevice({ log: log2 = () => {
+} } = {}) {
+  log2("requesting WebGPU device\u2026");
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("no WebGPU adapter (use a WebGPU-capable browser)");
   if (!adapter.features.has("subgroups")) throw new Error('GPU lacks the "subgroups" feature (needed by the fast GEMV kernels)');
-  dev = await adapter.requestDevice({ requiredFeatures: ["subgroups"], requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
+  const dev = await adapter.requestDevice({
+    requiredFeatures: ["subgroups"],
+    requiredLimits: {
+      maxBufferSize: adapter.limits.maxBufferSize,
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize
+    }
+  });
   dev.addEventListener?.("uncapturederror", (e) => console.error("GPUERR", e.error.message));
-  log(`WebGPU ready. maxBuffer=${(Number(adapter.limits.maxBufferSize) / 1e9).toFixed(2)}GB`);
+  log2(`WebGPU ready. maxBuffer=${(Number(adapter.limits.maxBufferSize) / 1e9).toFixed(2)}GB`);
+  return dev;
 }
+
+// src/services/prompt_formatter.js
+function chatML(messages) {
+  let s = messages[0]?.role === "system" ? "" : "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n";
+  for (const m of messages) s += `<|im_start|>${m.role}
+${m.content}<|im_end|>
+`;
+  return s + "<|im_start|>assistant\n";
+}
+function formatMessages(tokenizer, messages) {
+  try {
+    return tokenizer.apply_chat_template(messages, { tokenize: false, add_generation_prompt: true });
+  } catch {
+    return chatML(messages);
+  }
+}
+
+// src/services/model_session.js
 async function buildTokenizer(reader) {
   const tj = JSON.parse(await reader.text("tokenizer.json"));
   const tc2 = JSON.parse(await reader.text("tokenizer_config.json"));
   const { PreTrainedTokenizer: PreTrainedTokenizer2 } = await Promise.resolve().then(() => (init_transformers_web(), transformers_web_exports));
   return new PreTrainedTokenizer2(tj, tc2);
-}
-async function loadWith(reader, label) {
-  await initDevice();
-  log(`loading tokenizer from ${label}\u2026`);
-  tokenizer = await buildTokenizer(reader);
-  log(`tokenizer loaded. streaming + quantizing weights (int4) from ${label}\u2026`);
-  const t0 = performance.now();
-  rt2 = new QwenWGPU(dev, QWEN25_3B);
-  await rt2.build(reader, (msg, frac) => log(`weights: ${msg} ${(frac * 100).toFixed(0)}%`));
-  window.__rt = rt2;
-  window.__tokenizer = tokenizer;
-  log(`READY in ${((performance.now() - t0) / 1e3).toFixed(1)}s \u2014 base loaded once; adapters hot-swap live.`);
-  $2("go").disabled = false;
-  $2("loraFile").disabled = false;
-}
-async function readLogits() {
-  const n = QWEN25_3B.vocabSize;
-  const rb = dev.createBuffer({ size: n * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const enc = dev.createCommandEncoder();
-  enc.copyBufferToBuffer(rt2.s.logits, 0, rb, 0, n * 4);
-  dev.queue.submit([enc.finish()]);
-  await rb.mapAsync(GPUMapMode.READ);
-  const a = new Float32Array(rb.getMappedRange()).slice();
-  rb.unmap();
-  rb.destroy();
-  return a;
 }
 function sample(logits, temperature) {
   let best = 0, bv = -Infinity;
@@ -35812,85 +36246,142 @@ function sample(logits, temperature) {
   }
   return p.length - 1;
 }
-function chatML(messages) {
-  let s = messages[0]?.role === "system" ? "" : "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n";
-  for (const m of messages) s += `<|im_start|>${m.role}
-${m.content}<|im_end|>
-`;
-  return s + "<|im_start|>assistant\n";
+var ModelSession = class {
+  constructor({ cfg = QWEN25_3B, log: log2 = () => {
+  } } = {}) {
+    this.cfg = cfg;
+    this.log = log2;
+    this.dev = null;
+    this.rt = null;
+    this.tokenizer = null;
+  }
+  async loadWith(reader, label) {
+    this.dev = await initWebGPUDevice({ log: this.log });
+    this.log(`loading tokenizer from ${label}\u2026`);
+    this.tokenizer = await buildTokenizer(reader);
+    this.log(`tokenizer loaded. streaming + quantizing weights (int4) from ${label}\u2026`);
+    const t0 = performance.now();
+    this.rt = new QwenWGPU(this.dev, this.cfg);
+    await this.rt.build(reader, (msg, frac) => this.log(`weights: ${msg} ${(frac * 100).toFixed(0)}%`));
+    window.__rt = this.rt;
+    window.__tokenizer = this.tokenizer;
+    this.log(`READY in ${((performance.now() - t0) / 1e3).toFixed(1)}s \u2014 base loaded once; adapters hot-swap live.`);
+    return this;
+  }
+  async readLogits() {
+    const n = this.cfg.vocabSize;
+    const rb = this.dev.createBuffer({ size: n * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = this.dev.createCommandEncoder();
+    enc.copyBufferToBuffer(this.rt.s.logits, 0, rb, 0, n * 4);
+    this.dev.queue.submit([enc.finish()]);
+    await rb.mapAsync(GPUMapMode.READ);
+    const a = new Float32Array(rb.getMappedRange()).slice();
+    rb.unmap();
+    rb.destroy();
+    return a;
+  }
+  async *generate(messages, { maxTokens = 1024, temperature = 0, stopIds = [151645, 151643] } = {}) {
+    const rt2 = this.rt, tokenizer = this.tokenizer;
+    const ids = tokenizer.encode(formatMessages(tokenizer, messages));
+    if (ids.length <= rt2.maxPrefillT) rt2.prefillBatch(ids);
+    else for (let p = 0; p < ids.length; p++) rt2.token(ids[p], p);
+    let pos = ids.length;
+    const emit = (id) => tokenizer.decode([id], { skip_special_tokens: true });
+    if (temperature > 0) {
+      let next = sample(await this.readLogits(), temperature);
+      for (let step = 0; step < maxTokens; step++) {
+        if (stopIds.includes(next)) break;
+        const d = emit(next);
+        if (d) yield d;
+        rt2.token(next, pos);
+        pos++;
+        next = sample(await this.readLogits(), temperature);
+      }
+      return;
+    }
+    const first = await rt2.argmaxLogits();
+    if (stopIds.includes(first)) return;
+    {
+      const d = emit(first);
+      if (d) yield d;
+    }
+    let emitted = 1;
+    while (emitted < maxTokens && pos < rt2.maxCtx) {
+      const K2 = Math.min(rt2.MAXBATCH, maxTokens - emitted, rt2.maxCtx - pos);
+      const batch = await rt2.decodeBatch(pos, K2);
+      pos += K2;
+      let stop = false;
+      for (const id of batch) {
+        if (stopIds.includes(id)) {
+          stop = true;
+          break;
+        }
+        const d = emit(id);
+        if (d) yield d;
+        emitted++;
+        if (emitted >= maxTokens) {
+          stop = true;
+          break;
+        }
+      }
+      if (stop) break;
+    }
+  }
+};
+
+// src/main.js
+var $2 = (id) => document.getElementById(id);
+var log = (m) => {
+  const s = $2("status");
+  if (s) s.textContent = m;
+  console.log("[harness]", m);
+};
+var SYS = `You are a senior bug bounty triage analyst. Read the submission and assign exactly ONE disposition from: valid_impactful, valid_low, corroborated_surge, likely_duplicate, out_of_scope, theoretical_no_poc, self_inflicted, accepted_risk, slop. Estimate severity_estimate (critical/high/medium/low/none). Think step by step, then output a SINGLE JSON object on the last line with keys: disposition, severity_estimate, is_duplicate_risk, reasoning, questions_for_researcher, confidence. Output only valid JSON for that object.`;
+var session = new ModelSession({ cfg: QWEN25_3B, log });
+var adapters = new AdapterRegistry();
+var generation = new GenerationController({ session, adapters, systemPrompt: SYS, log });
+async function loadWith(reader, label) {
+  await session.loadWith(reader, label);
+  $2("go").disabled = false;
+  $2("loraFile").disabled = false;
 }
-async function* generate(messages, { maxTokens = 1024, temperature = 0, stopIds = [151645, 151643] } = {}) {
-  let promptText;
-  try {
-    promptText = tokenizer.apply_chat_template(messages, { tokenize: false, add_generation_prompt: true });
-  } catch {
-    promptText = chatML(messages);
-  }
-  const ids = tokenizer.encode(promptText);
-  if (!rt2.lora && ids.length <= rt2.maxPrefillT) rt2.prefillBatch(ids);
-  else for (let p = 0; p < ids.length; p++) rt2.token(ids[p], p);
-  let pos = ids.length;
-  const emit = (id) => tokenizer.decode([id], { skip_special_tokens: true });
-  if (temperature > 0) {
-    let next = sample(await readLogits(), temperature);
-    for (let step = 0; step < maxTokens; step++) {
-      if (stopIds.includes(next)) break;
-      const d = emit(next);
-      if (d) yield d;
-      rt2.token(next, pos);
-      pos++;
-      next = sample(await readLogits(), temperature);
-    }
-    return;
-  }
-  const first = await rt2.argmaxLogits();
-  if (stopIds.includes(first)) return;
-  {
-    const d = emit(first);
-    if (d) yield d;
-  }
-  let emitted = 1;
-  while (emitted < maxTokens && pos < rt2.maxCtx) {
-    const K2 = Math.min(rt2.MAXBATCH, maxTokens - emitted, rt2.maxCtx - pos);
-    const batch = await rt2.decodeBatch(pos, K2);
-    pos += K2;
-    let stop = false;
-    for (const id of batch) {
-      if (stopIds.includes(id)) {
-        stop = true;
-        break;
-      }
-      const d = emit(id);
-      if (d) yield d;
-      emitted++;
-      if (emitted >= maxTokens) {
-        stop = true;
-        break;
-      }
-    }
-    if (stop) break;
-  }
+function addAdapterOption(name, modules, where) {
+  adapters.add(name, modules);
+  const opt = document.createElement("option");
+  opt.value = name;
+  opt.textContent = `${name} (${Object.keys(modules).length} modules${where ? ", " + where : ""})`;
+  $2("adapter").appendChild(opt);
+  $2("adapter").value = name;
+  log(`LoRA "${name}" loaded (${Object.keys(modules).length} modules) \u2014 Triage to hot-swap.`);
 }
 async function runTriage() {
-  if (!rt2) return;
   $2("go").disabled = true;
-  $2("out").textContent = "";
-  const node = document.createTextNode("");
-  $2("out").appendChild(node);
-  const adapterName = $2("adapter").value;
-  if (adapters[adapterName]) rt2.setLora(adapters[adapterName]);
-  else rt2.clearLora();
-  log(`generating (adapter=${adapterName})\u2026`);
-  const messages = [{ role: "system", content: SYS }, { role: "user", content: $2("report").value }];
-  const t0 = performance.now();
-  let n = 0;
-  for await (const delta of generate(messages, { maxTokens: rt2.maxCtx, temperature: 0 })) {
-    node.appendData(delta);
-    n++;
+  try {
+    await generation.runTriage({
+      adapterName: $2("adapter").value,
+      report: $2("report").value,
+      outputNode: $2("out")
+    });
+  } finally {
+    $2("go").disabled = false;
   }
-  const dt = (performance.now() - t0) / 1e3;
-  log(`done: ${n} tokens in ${dt.toFixed(1)}s (${(n / dt).toFixed(1)} tok/s) adapter=${adapterName}`);
-  $2("go").disabled = false;
+}
+async function fetchHfAdapterFiles(repo, token) {
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const grab = async (n) => {
+    const r = await fetch(`https://huggingface.co/${repo}/resolve/main/${n}`, { headers });
+    if (!r.ok) return null;
+    const buf = await r.arrayBuffer();
+    return { name: n, async text() {
+      return new TextDecoder().decode(buf);
+    }, async arrayBuffer() {
+      return buf;
+    } };
+  };
+  const st2 = await grab("adapters.safetensors") || await grab("adapter_model.safetensors");
+  if (!st2) throw new Error("no adapters.safetensors / adapter_model.safetensors in " + repo);
+  const cfg = await grab("adapter_config.json");
+  return cfg ? [st2, cfg] : [st2];
 }
 window.addEventListener("DOMContentLoaded", () => {
   $2("load").onclick = () => loadWith(urlReader($2("modelUrl").value.trim()), $2("modelUrl").value.trim()).catch((e) => {
@@ -35922,19 +36413,10 @@ window.addEventListener("DOMContentLoaded", () => {
     log("ERROR: " + e.message);
     console.error(e);
   });
-  const addAdapter = (name, modules, where) => {
-    adapters[name] = { modules };
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = `${name} (${Object.keys(modules).length} modules${where ? ", " + where : ""})`;
-    $2("adapter").appendChild(opt);
-    $2("adapter").value = name;
-    log(`LoRA "${name}" loaded (${Object.keys(modules).length} modules) \u2014 Triage to hot-swap.`);
-  };
   $2("loraFile").onchange = async (ev) => {
     try {
-      const { name, modules } = await loadLoraAdapterGPU(dev, [...ev.target.files], QWEN25_3B);
-      addAdapter(name, modules);
+      const { name, modules } = await loadLoraAdapterGPU(session.dev, [...ev.target.files], QWEN25_3B);
+      addAdapterOption(name, modules);
     } catch (e) {
       log("LoRA load error: " + e.message);
       console.error(e);
@@ -35942,27 +36424,14 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const hfLoraBtn = $2("loadHFLora");
   if (hfLoraBtn) hfLoraBtn.onclick = async () => {
-    if (!dev) return log("load a model first, then load a LoRA adapter");
+    if (!session.dev) return log("load a model first, then load a LoRA adapter");
     const repo = ($2("hfLora")?.value || "").trim();
     const token = ($2("hfToken")?.value || "").trim();
     if (!repo) return log("enter a Hugging Face LoRA adapter repo id");
     try {
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const grab = async (n) => {
-        const r = await fetch(`https://huggingface.co/${repo}/resolve/main/${n}`, { headers });
-        if (!r.ok) return null;
-        const buf = await r.arrayBuffer();
-        return { name: n, async text() {
-          return new TextDecoder().decode(buf);
-        }, async arrayBuffer() {
-          return buf;
-        } };
-      };
-      const st2 = await grab("adapters.safetensors") || await grab("adapter_model.safetensors");
-      if (!st2) throw new Error("no adapters.safetensors / adapter_model.safetensors in " + repo);
-      const cfg = await grab("adapter_config.json");
-      const { name, modules } = await loadLoraAdapterGPU(dev, cfg ? [st2, cfg] : [st2], QWEN25_3B);
-      addAdapter(repo.split("/").pop() || name, modules, "HF");
+      const files = await fetchHfAdapterFiles(repo, token);
+      const { name, modules } = await loadLoraAdapterGPU(session.dev, files, QWEN25_3B);
+      addAdapterOption(repo.split("/").pop() || name, modules, "HF");
     } catch (e) {
       log("HF LoRA error: " + e.message + (token ? "" : " (private/gated? add a token)"));
       console.error(e);

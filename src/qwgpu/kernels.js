@@ -65,6 +65,45 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   if (lid.x == 0u) { let nsg=(64u+sgsz-1u)/sgsz; var o=0.0; for(var i=0u;i<nsg;i=i+1u){o=o+part[i];} d[r]=o; }
 }`;
 
+// Batched LoRA first matmul for prefill:
+// D[t,r] = X[t,:] @ A[r,:]. A layout matches decode LORA_A: [rank][K].
+export const LORA_A_BATCH = `
+enable subgroups;
+@group(0) @binding(0) var<storage,read> x: array<f32>;       // [T][K]
+@group(0) @binding(1) var<storage,read> A: array<f32>;       // [rank][K]
+@group(0) @binding(2) var<storage,read_write> d: array<f32>; // [T][rank]
+@group(0) @binding(3) var<uniform> m: vec4<u32>;             // K, rank, T, _
+var<workgroup> part: array<f32,64>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
+  let r = wid.x; let t = wid.y; let K = m.x; let rank = m.y; if (r >= rank || t >= m.z) { return; }
+  let xb = t*K; let ab = r*K; var acc = 0.0;
+  for (var k = lid.x; k < K; k = k + 64u) { acc = acc + x[xb + k]*A[ab + k]; }
+  let s = subgroupAdd(acc);
+  if (sgid == 0u) { part[lid.x / sgsz] = s; }
+  workgroupBarrier();
+  if (lid.x == 0u) { let nsg=(64u+sgsz-1u)/sgsz; var o=0.0; for(var i=0u;i<nsg;i=i+1u){o=o+part[i];} d[t*rank + r]=o; }
+}`;
+
+// Add batched LoRA second matmul into an existing GEMM output:
+// Y[t,n] += scale * sum_r D[t,r] * B[r,n].
+export const LORA_B_ADD_T = `
+struct Meta { T:u32, N:u32, rank:u32, pad:u32, scale:f32, p1:f32, p2:f32, p3:f32 };
+@group(0) @binding(0) var<storage,read> d: array<f32>;        // [T][rank]
+@group(0) @binding(1) var<storage,read> B: array<f32>;        // [rank][N]
+@group(0) @binding(2) var<storage,read_write> Y: array<f32>;  // [T][N]
+@group(0) @binding(3) var<uniform> m: Meta;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let total = m.T * m.N; let stride = nwg.x * 256u;
+  for (var i = gid.x; i < total; i = i + stride) {
+    let t = i / m.N; let n = i % m.N; var acc = 0.0;
+    for (var r = 0u; r < m.rank; r = r + 1u) { acc = acc + d[t*m.rank + r] * B[r*m.N + n]; }
+    Y[i] = Y[i] + m.scale * acc;
+  }
+}`;
+
 // RMSNorm: y = x * rsqrt(mean(x^2)+eps) * g   (single row, K elements)
 export const RMSNORM = `
 @group(0) @binding(0) var<storage,read> x: array<f32>;
