@@ -40,7 +40,7 @@
   <div class="stat"><b>100%</b><span>client-side WebGPU</span></div>
 </div>
 
-<p>Emberglass runs a fine-tuned <b>Qwen2.5-3B</b> reasoning model entirely on your own GPU, from a single static page, in hand-written WebGPU compute shaders. It thinks for thousands of tokens and streams a verdict — and nothing ever leaves your device. You can swap the model's specialization <b>live</b> by hot-swapping a LoRA adapter: the base loads once and never moves. Code: <a href="https://github.com/maceip/emberglass">github.com/maceip/emberglass</a>.</p>
+<p>Emberglass runs a fine-tuned <b>Qwen2.5-3B</b> reasoning model entirely on your own GPU, from a single static page, in hand-written WebGPU compute shaders. It thinks for thousands of tokens and streams a verdict — and nothing ever leaves your device. You can swap the model's specialization <b>live</b> by hot-swapping a LoRA adapter: the base loads once and never moves. Code: <a href="https://github.com/maceip/web-lora-qwen">github.com/maceip/web-lora-qwen</a>.</p>
 
 <div class="banner">
   <b>Bring your own model.</b> This page is the engine — it hosts no multi-GB weights. To run it: serve a Qwen2.5-3B checkpoint from the <i>same origin</i> as this page (clone the repo, drop the model in <code>./model</code>, <code>npx http-server</code>), then set the model URL below and press <b>Load</b>. Needs a browser exposing WebGPU with the <code>subgroups</code> feature (Chrome 128+ / Canary). Drag in a PEFT/MLX LoRA adapter to hot-swap a specialization.
@@ -67,7 +67,7 @@ Asset: api.example.com. GET /api/v1/invoices/{id}/pdf returns any invoice with n
 <h3>Output</h3>
 <div id="out">—</div>
 
-<p class="foot">Built the hard way, on purpose. 🜂 &nbsp;·&nbsp; <a href="https://github.com/maceip/emberglass">source</a> · <a href="https://huggingface.co/macmacmacmac/emberglass">model card</a></p>
+<p class="foot">Built the hard way, on purpose. 🜂 &nbsp;·&nbsp; <a href="https://github.com/maceip/web-lora-qwen">source</a> · <a href="https://huggingface.co/macmacmacmac/emberglass">model card</a></p>
 
 <script type="module" src="./bundle.js"></script>
 </body>

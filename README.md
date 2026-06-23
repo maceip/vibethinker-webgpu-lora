@@ -5,7 +5,7 @@
 <b>~35 tokens/sec decode · live LoRA hot-swap · bit-exact to the reference · 100% client-side WebGPU</b>
 </p>
 
-<p align="center"><a href="https://maceip.github.io/emberglass/"><b>▶ Live demo</b></a> (bring your own model) · <a href="https://huggingface.co/macmacmacmac/emberglass">model card</a></p>
+<p align="center"><a href="https://maceip.github.io/web-lora-qwen/"><b>▶ Live demo</b></a> (bring your own model) · <a href="https://huggingface.co/macmacmacmac/emberglass">model card</a></p>
 
 ---
 
