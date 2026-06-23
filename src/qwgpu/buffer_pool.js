@@ -15,9 +15,31 @@ export class GPUBufferPool {
     this.pipelineIds = new WeakMap();
     this.nextBufferId = 1;
     this.nextPipelineId = 1;
+    this._stats = this._emptyStats();
+  }
+
+  _emptyStats() {
+    return {
+      buffersCreated: 0,
+      dynamicUniformWrites: 0,
+      staticUniformHits: 0,
+      staticUniformMisses: 0,
+      bindGroupHits: 0,
+      bindGroupMisses: 0,
+      uncachedBindGroups: 0,
+    };
+  }
+
+  resetStats() {
+    this._stats = this._emptyStats();
+  }
+
+  stats() {
+    return { ...this._stats, uniformPoolSize: this.uniformPool.length, staticUniforms: this.staticUniforms.size, bindGroups: this.bindGroups.size };
   }
 
   buffer(size, usage) {
+    this._stats.buffersCreated++;
     return this.dev.createBuffer({ size, usage });
   }
 
@@ -37,6 +59,7 @@ export class GPUBufferPool {
     let b = this.uniformPool[this.uniformIdx];
     if (!b) { b = this.buffer(32, usage); this.uniformPool[this.uniformIdx] = b; }
     this.uniformIdx++;
+    this._stats.dynamicUniformWrites++;
     this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
     return b;
   }
@@ -48,10 +71,11 @@ export class GPUBufferPool {
   staticUniform(key, arr, usage) {
     let b = this.staticUniforms.get(key);
     if (!b) {
+      this._stats.staticUniformMisses++;
       b = this.buffer(32, usage);
       this.dev.queue.writeBuffer(b, 0, arr.buffer, arr.byteOffset, arr.byteLength);
       this.staticUniforms.set(key, b);
-    }
+    } else this._stats.staticUniformHits++;
     return b;
   }
 
@@ -68,6 +92,7 @@ export class GPUBufferPool {
   }
 
   uncachedBindGroup(pipe, buffers) {
+    this._stats.uncachedBindGroups++;
     return this.dev.createBindGroup({
       layout: pipe.getBindGroupLayout(0),
       entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } })),
@@ -79,10 +104,11 @@ export class GPUBufferPool {
     const fullKey = `${this.idForPipeline(pipe)}:${key}:${buffers.map(b => this.idForBuffer(b)).join(',')}`;
     let bg = this.bindGroups.get(fullKey);
     if (!bg) {
+      this._stats.bindGroupMisses++;
       bg = this.uncachedBindGroup(pipe, buffers);
       this.bindGroups.set(fullKey, bg);
       if (sensitive) this.sensitiveBindGroups.add(fullKey);
-    }
+    } else this._stats.bindGroupHits++;
     return bg;
   }
 

@@ -3,7 +3,7 @@
 // buffers consumed by the GEMV kernel). No tf.js → no per-op dispatch overhead.
 //
 // Correctness is validated against the tf.js forward (which == HuggingFace).
-import { GEMV, GEMV4, LORA_A, LORA_A_BATCH, LORA_B_ADD_T, RMSNORM, ROPE, ATTN_PARTIAL, ATTN_COMBINE, ADD, SILUMUL, EMBED, EMBED_BUF, ARGMAX,
+import { GEMV, GEMV4, LORA_A, LORA_A_BATCH, LORA_B_ADD_T, RMSNORM, ROPE, ATTN_PARTIAL, ATTN_COMBINE, ADD, SILUMUL, EMBED, EMBED_BUF, ARGMAX, TOPK_SELECT,
   GEMM4, RMSNORM_T, ROPE_T, EMBED_T, ATTN_PREFILL } from './kernels.js';
 import { createQwenSchema } from './model_schema.js';
 import { createDispatchPlan } from './dispatch_plan.js';
@@ -15,12 +15,14 @@ const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsag
 const UNIFORM = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
 
 export class QwenWGPU {
-  // opts: { maxCtx, maxPrefillT } — context window + batched-prefill cap (default 8192 each;
-  // raise toward the base model's limit, e.g. 32768, memory permitting — KV cache grows linearly).
+  // opts: { maxCtx, maxPrefillT, decodeBatchSize, samplingTopK } — context
+  // window + batched-prefill cap (default 8192 each; KV cache grows linearly).
   constructor(device, cfg, opts = {}) {
     this.dev = device; this.cfg = cfg; this.lora = null; this.bufs = {}; this.opts = opts;
     this.pool = new GPUBufferPool(device, { cacheBindGroups: opts.cacheBindGroups !== false });
     this._loraEpoch = 0;
+    this._argmaxReadBusy = false;
+    this._topKReadBusy = false;
   }
 
   _buf(size, usage = STORAGE) { return this.pool.buffer(size, usage); }
@@ -38,11 +40,11 @@ export class QwenWGPU {
   // `source` is a base URL string OR a reader { range, text } (e.g. hfReader/fileReader).
   async build(source, onProgress = () => {}) {
     const dev = this.dev, c = this.cfg;
-    this.CHUNK = 128; this.MAXBATCH = 16;
+    this.CHUNK = 128; this._initRuntimeOptions();
     this.maxCtx = this.opts.maxCtx || 8192;                       // context window (KV cache length)
     this.maxPrefillT = Math.min(this.opts.maxPrefillT || 8192, this.maxCtx); // batched-prefill cap (<= ctx)
     this.pipes = { gemv: this._pipe(GEMV), loraA: this._pipe(LORA_A), loraABatch: this._pipe(LORA_A_BATCH), loraBAddT: this._pipe(LORA_B_ADD_T), rms: this._pipe(RMSNORM), rope: this._pipe(ROPE), attnP: this._pipe(ATTN_PARTIAL), attnC: this._pipe(ATTN_COMBINE), add: this._pipe(ADD), silu: this._pipe(SILUMUL), embed: this._pipe(EMBED), embedBuf: this._pipe(EMBED_BUF), argmax: this._pipe(ARGMAX), gemv4: this._pipe(GEMV4),
-      gemm4: this._pipe(GEMM4), rmsT: this._pipe(RMSNORM_T), ropeT: this._pipe(ROPE_T), embedT: this._pipe(EMBED_T), attnPrefill: this._pipe(ATTN_PREFILL) };
+      topkSelect: this._pipe(TOPK_SELECT), gemm4: this._pipe(GEMM4), rmsT: this._pipe(RMSNORM_T), ropeT: this._pipe(ROPE_T), embedT: this._pipe(EMBED_T), attnPrefill: this._pipe(ATTN_PREFILL) };
     onProgress('streaming + quantizing weights', 0);
     this.schema = createQwenSchema(c);
     this.plan = createDispatchPlan(this.schema);
@@ -78,14 +80,38 @@ export class QwenWGPU {
       attn: this._buf(qd * 4), tmp: this._buf(Math.max(qd, I) * 4), tmp2: this._buf(I * 4), logits: this._buf(c.vocabSize * 4),
       dummy: this._buf(64), loraD: this._buf(256 * 4), amax: this._buf(4),
       pm: this._buf(c.numHeads * NSPLITMAX * 4), pz: this._buf(c.numHeads * NSPLITMAX * 4), po: this._buf(c.numHeads * NSPLITMAX * c.headDim * 4),
-      idsBuf: this._buf(this.MAXBATCH * 4),
+      idsBuf: this._buf(this.decodeBatchCapacity * 4), sampleIds: this._buf(this.maxSamplingTopK * 4), sampleVals: this._buf(this.maxSamplingTopK * 4),
     };
-    this.idsRead = this._buf(this.MAXBATCH * 4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
+    this.idsRead = this._buf(this.decodeBatchCapacity * 4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
+    this.argmaxRead = this._buf(4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
+    this.sampleIdsRead = this._buf(this.maxSamplingTopK * 4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
+    this.sampleValsRead = this._buf(this.maxSamplingTopK * 4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
     // prefill scratch is allocated lazily (sized to the actual prompt) — see _ensurePrefillScratch.
     this.sT = null; this.sTcap = 0;
     this._initStaticUniforms();
+    if (this.decodeBatchMode === 'auto') {
+      onProgress('autotuning decode batch', 0.98);
+      await this.autotuneDecodeBatch();
+    }
     onProgress('ready', 1);
     return this;
+  }
+
+  _initRuntimeOptions() {
+    const opts = this.opts;
+    this.decodeBatchMode = opts.decodeBatchSize === 'auto' ? 'auto' : 'fixed';
+    this.decodeBatchCandidates = (opts.decodeBatchCandidates || [1, 2, 4, 8, 16, 32])
+      .map(x => Math.max(1, Math.floor(Number(x) || 0))).filter(Boolean);
+    const requested = opts.decodeBatchSize === undefined || opts.decodeBatchSize === 'auto' ? 16 : Math.max(1, Math.floor(Number(opts.decodeBatchSize)));
+    this.maxDecodeBatchSize = Math.max(1, Math.floor(Number(opts.maxDecodeBatchSize || Math.max(requested, ...this.decodeBatchCandidates, 16))));
+    this.decodeBatchCapacity = Math.min(this.maxDecodeBatchSize, Math.max(requested, ...this.decodeBatchCandidates));
+    this.MAXBATCH = Math.min(requested, this.decodeBatchCapacity);
+    this.decodeBatchWarmupTokens = Math.max(0, Math.floor(Number(opts.decodeBatchWarmupTokens ?? 4)));
+    this.decodeBatchWarmupSize = Math.min(this.decodeBatchCapacity, Math.max(1, Math.floor(Number(opts.decodeBatchWarmupSize ?? 4))));
+    this.decodeBatchMaxLatencyMs = Number(opts.decodeBatchMaxLatencyMs ?? 250);
+    this.samplingTopK = Math.max(1, Math.floor(Number(opts.samplingTopK ?? 40)));
+    this.maxSamplingTopK = Math.max(this.samplingTopK, Math.floor(Number(opts.maxSamplingTopK ?? 64)));
+    this.decodeBatchTuning = { selected: this.MAXBATCH, candidates: [], reason: this.decodeBatchMode === 'auto' ? 'pending' : 'fixed' };
   }
 
   _buildRope(maxSeq) {
@@ -153,6 +179,74 @@ export class QwenWGPU {
     const t = new BigInt64Array(this.prof.read.getMappedRange()); const sums = {};
     for (let i = 0; i < n; i++) { const us = Number(t[2*i+1] - t[2*i]) / 1000; const c = this.prof.cats[i]; sums[c] = (sums[c] || 0) + us; }
     this.prof.read.unmap(); return sums;
+  }
+
+  poolStats() { return this.pool.stats(); }
+  resetPoolStats() { this.pool.resetStats(); }
+
+  estimateKvCacheBytes() {
+    const c = this.cfg;
+    return c.numLayers * 2 * c.numKVHeads * this.maxCtx * c.headDim * 4;
+  }
+
+  estimatePrefillScratchBytes(T, loraRank = this._activeMaxLoraRank()) {
+    const c = this.cfg, H = c.hiddenSize, qd = c.numHeads * c.headDim, kvd = c.numKVHeads * c.headDim, I = c.intermediateSize;
+    return (T * H * 4 * 2) + (T * qd * 4 * 2) + (T * kvd * 4 * 2) + (T * I * 4 * 2) + (T * 4) + (Math.max(1, T * Math.max(1, loraRank)) * 4);
+  }
+
+  greedyBatchSizeFor({ emitted = 0, remaining = Infinity, pos = 0 } = {}) {
+    const interactive = emitted < this.decodeBatchWarmupTokens ? this.decodeBatchWarmupSize : this.MAXBATCH;
+    return Math.max(0, Math.min(interactive, remaining, this.maxCtx - pos, this.decodeBatchCapacity));
+  }
+
+  async _resetAutotuneDecodeState(tokens, seedTokenId = 0) {
+    const c = this.cfg, S = this.s, H = c.hiddenSize, hd = c.headDim, qd = c.numHeads * hd, kvd = c.numKVHeads * hd, I = c.intermediateSize;
+    const nsplitMax = Math.ceil(this.maxCtx / this.CHUNK);
+    const touchedTokens = Math.min(Math.max(0, Math.floor(tokens)), this.maxCtx);
+    const enc = this.dev.createCommandEncoder();
+    const clear = (buf, bytes) => { if (bytes > 0) enc.clearBuffer(buf, 0, bytes); };
+
+    clear(S.hidden, H * 4); clear(S.normed, H * 4); clear(S.q, qd * 4); clear(S.k, kvd * 4); clear(S.v, kvd * 4);
+    clear(S.attn, qd * 4); clear(S.tmp, Math.max(qd, I) * 4); clear(S.tmp2, I * 4); clear(S.logits, c.vocabSize * 4);
+    clear(S.loraD, 256 * 4); clear(S.idsBuf, this.decodeBatchCapacity * 4);
+    clear(S.pm, c.numHeads * nsplitMax * 4); clear(S.pz, c.numHeads * nsplitMax * 4); clear(S.po, c.numHeads * nsplitMax * hd * 4);
+    const kvBytes = touchedTokens * kvd * 4;
+    for (let i = 0; i < c.numLayers; i++) { clear(this.kc[i], kvBytes); clear(this.vc[i], kvBytes); }
+
+    this.dev.queue.submit([enc.finish()]);
+    this.dev.queue.writeBuffer(S.amax, 0, new Uint32Array([seedTokenId]));
+    if (this.dev.queue.onSubmittedWorkDone) await this.dev.queue.onSubmittedWorkDone();
+  }
+
+  async autotuneDecodeBatch() {
+    const candidates = [...new Set(this.decodeBatchCandidates)]
+      .filter(k => k >= 1 && k <= this.decodeBatchCapacity && k <= this.maxCtx)
+      .sort((a, b) => a - b);
+    const rows = [];
+    const resetTokens = candidates.length ? Math.max(...candidates) : 0;
+    let selected = candidates[0] ?? this.MAXBATCH, best = Infinity;
+    try {
+      for (const k of candidates) {
+        await this._resetAutotuneDecodeState(resetTokens);
+        const t0 = performance.now();
+        await this.decodeGreedyBatch(0, k);
+        const ms = performance.now() - t0;
+        const msPerToken = ms / k;
+        rows.push({ k, ms, msPerToken });
+        const latencyOk = !Number.isFinite(this.decodeBatchMaxLatencyMs) || ms <= this.decodeBatchMaxLatencyMs;
+        if (latencyOk && msPerToken < best) { best = msPerToken; selected = k; }
+      }
+      if (!rows.some(r => r.k === selected) && rows.length) selected = rows.reduce((a, b) => a.msPerToken <= b.msPerToken ? a : b).k;
+      this.MAXBATCH = selected;
+      this.decodeBatchTuning = { selected, candidates: rows, reason: 'auto wall-clock decodeGreedyBatch with reset state' };
+    } catch (e) {
+      this.decodeBatchTuning = { selected: this.MAXBATCH, candidates: rows, reason: `auto failed: ${e.message}` };
+    } finally {
+      if (resetTokens > 0) {
+        try { await this._resetAutotuneDecodeState(resetTokens); } catch {}
+      }
+    }
+    return this.decodeBatchTuning;
   }
 
   // y = int8-GEMV(x, q) [+bias] [+lora]. q={w,scale,N,K}. moduleKey for LoRA lookup.
@@ -232,22 +326,55 @@ export class QwenWGPU {
   }
 
   _addInto(enc, yBuf, aBuf, n) {
-    const u = n === this.cfg.hiddenSize ? this.u.addHidden : this._uni(new Uint32Array([n]));
-    const bg = n === this.cfg.hiddenSize ? this._bgCached(this.pipes.add, [aBuf, yBuf, u], `add:${n}`) : this._bg(this.pipes.add, [aBuf, yBuf, u]);
+    const cache = n === this.cfg.hiddenSize;
+    const u = cache ? this.u.addHidden : this._uni(new Uint32Array([n]));
+    const bg = cache ? this._bgCached(this.pipes.add, [aBuf, yBuf, u], `add:${n}`) : this._bg(this.pipes.add, [aBuf, yBuf, u]);
     this._dispatch(enc, this.pipes.add, bg, Math.min(Math.ceil(n/256), 65535), 1, 'add');
   }
   _siluMul(enc, gateBuf, upBuf, n) {
-    const u = n === this.cfg.intermediateSize ? this.u.siluIntermediate : this._uni(new Uint32Array([n]));
-    const bg = n === this.cfg.intermediateSize ? this._bgCached(this.pipes.silu, [gateBuf, upBuf, u], `silu:${n}`) : this._bg(this.pipes.silu, [gateBuf, upBuf, u]);
+    const cache = n === this.cfg.intermediateSize;
+    const u = cache ? this.u.siluIntermediate : this._uni(new Uint32Array([n]));
+    const bg = cache ? this._bgCached(this.pipes.silu, [gateBuf, upBuf, u], `silu:${n}`) : this._bg(this.pipes.silu, [gateBuf, upBuf, u]);
     this._dispatch(enc, this.pipes.silu, bg, Math.min(Math.ceil(n/256), 65535), 1, 'silu');
   }
   embedRow(enc, id) { const e = this.q[this.plan.embed.name]; this._dispatch(enc, this.pipes.embed, this._bg(this.pipes.embed, [e.w, e.scale, this.s.hidden, this._uni(new Uint32Array([id, this.cfg.hiddenSize]))]), Math.ceil(this.cfg.hiddenSize/256), 1, 'embed'); }
   async argmaxLogits() {
+    if (this._argmaxReadBusy) throw new Error('argmaxLogits() is already in flight; concurrent generation is not supported');
+    this._argmaxReadBusy = true;
     const enc = this.dev.createCommandEncoder();
     this._dispatch(enc, this.pipes.argmax, this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], 'argmax'), 1);
-    const rb = this._buf(4, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
-    enc.copyBufferToBuffer(this.s.amax, 0, rb, 0, 4); this.dev.queue.submit([enc.finish()]);
-    await rb.mapAsync(GPUMapMode.READ); const id = new Uint32Array(rb.getMappedRange())[0]; rb.unmap(); rb.destroy(); return id;
+    enc.copyBufferToBuffer(this.s.amax, 0, this.argmaxRead, 0, 4); this.dev.queue.submit([enc.finish()]);
+    try {
+      await this.argmaxRead.mapAsync(GPUMapMode.READ);
+      const id = new Uint32Array(this.argmaxRead.getMappedRange())[0];
+      this.argmaxRead.unmap();
+      return id;
+    } finally {
+      this._argmaxReadBusy = false;
+    }
+  }
+  async topKLogits(k = this.samplingTopK) {
+    if (this._topKReadBusy) throw new Error('topKLogits() is already in flight; concurrent sampling is not supported');
+    this._topKReadBusy = true;
+    try {
+      k = Math.min(Math.max(1, Math.floor(k)), this.maxSamplingTopK, this.cfg.vocabSize);
+      const enc = this.dev.createCommandEncoder();
+      for (let i = 0; i < k; i++) {
+        const u = this._staticUni(`topk:${this.cfg.vocabSize}:${i}`, new Uint32Array([this.cfg.vocabSize, i]));
+        this._dispatch(enc, this.pipes.topkSelect, this._bgCached(this.pipes.topkSelect, [this.s.logits, this.s.sampleIds, this.s.sampleVals, u], `topk:${i}`), 1, 1, 'topk');
+      }
+      enc.copyBufferToBuffer(this.s.sampleIds, 0, this.sampleIdsRead, 0, k * 4);
+      enc.copyBufferToBuffer(this.s.sampleVals, 0, this.sampleValsRead, 0, k * 4);
+      this.dev.queue.submit([enc.finish()]);
+      await Promise.all([this.sampleIdsRead.mapAsync(GPUMapMode.READ), this.sampleValsRead.mapAsync(GPUMapMode.READ)]);
+      const ids = Array.from(new Uint32Array(this.sampleIdsRead.getMappedRange(), 0, k));
+      const vals = Array.from(new Float32Array(this.sampleValsRead.getMappedRange(), 0, k));
+      return ids.map((id, i) => ({ id, logit: vals[i] }));
+    } finally {
+      if (this.sampleIdsRead.mapState !== 'unmapped') this.sampleIdsRead.unmap();
+      if (this.sampleValsRead.mapState !== 'unmapped') this.sampleValsRead.unmap();
+      this._topKReadBusy = false;
+    }
   }
   // Run one token end-to-end (embed + step) and submit.
   token(id, pos) { this._resetUni(); const enc = this.dev.createCommandEncoder(); this.embedRow(enc, id); this.step(enc, id, pos); this.dev.queue.submit([enc.finish()]); }
@@ -257,11 +384,13 @@ export class QwenWGPU {
   // argmax(logits) -> s.amax, within the given encoder (no submit/readback)
   argmaxInto(enc) { this._dispatch(enc, this.pipes.argmax, this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], 'argmax'), 1, 1, 'argmax'); }
 
-  // GPU-resident batched greedy decode: chains embed->step->argmax->embed for K
-  // tokens in ONE submit (no per-token CPU sync), reads back K ids once. Assumes
-  // s.amax holds the current token to embed. Returns the K generated ids.
+  // GPU-resident batched GREEDY decode only: chains embed->step->argmax for K
+  // tokens in ONE submit, reads back K ids once, and checks stop tokens only
+  // after readback. It assumes s.amax already holds the current token id to
+  // embed. Do not use for sampled decoding; sampled tokens must be written by
+  // the CPU/GPU sampler one step at a time.
   async decodeBatch(startPos, K) {
-    K = Math.min(K, this.maxCtx - startPos);   // never write KV past the cache
+    K = Math.min(K, this.decodeBatchCapacity, this.maxCtx - startPos);   // never write/read past cache or ids buffers
     if (K <= 0) return [];
     this._resetUni();
     const enc = this.dev.createCommandEncoder();
@@ -277,42 +406,52 @@ export class QwenWGPU {
     const ids = Array.from(new Uint32Array(this.idsRead.getMappedRange(), 0, K)); this.idsRead.unmap();
     return ids;
   }
+  async decodeGreedyBatch(startPos, K) { return this.decodeBatch(startPos, K); }
 
   // ---- PREFILL (T>1): process the whole prompt at once via tiled GEMM. If a LoRA
   // adapter has the projection module, add its batched delta immediately after base GEMM.
   gemm4(enc, aBuf, q, yBuf, T, biasBuf, moduleKey) {
-    const meta = new Uint32Array([q.K, q.N, T, q.gpr, biasBuf ? 1 : 0, 0, 0, 0]);
-    const bg = this._bg(this.pipes.gemm4, [aBuf, q.w, q.scale, biasBuf || this.s.dummy, yBuf, this._uni(meta)]);
+    const meta = this._uni(new Uint32Array([q.K, q.N, T, q.gpr, biasBuf ? 1 : 0, 0, 0, 0]));
+    const bg = this._bg(this.pipes.gemm4, [aBuf, q.w, q.scale, biasBuf || this.s.dummy, yBuf, meta]);
     this._dispatch(enc, this.pipes.gemm4, bg, Math.ceil(q.N / 64), Math.ceil(T / 16), 'gemm4');
     const mod = this.lora?.modules?.[moduleKey];
     if (mod) this.loraBatchDelta(enc, aBuf, yBuf, q, T, mod);
   }
   loraBatchDelta(enc, xBuf, yBuf, q, T, mod) {
-    const bgA = this._bg(this.pipes.loraABatch, [xBuf, mod.A, this.sT.loraD, this._uni(new Uint32Array([q.K, mod.rank, T, 0]))]);
+    const uA = this._uni(new Uint32Array([q.K, mod.rank, T, 0]));
+    const bgA = this._bg(this.pipes.loraABatch, [xBuf, mod.A, this.sT.loraD, uA]);
     this._dispatch(enc, this.pipes.loraABatch, bgA, mod.rank, T, 'loraA:T');
     const meta = new ArrayBuffer(32); const dv = new DataView(meta);
     dv.setUint32(0, T, true); dv.setUint32(4, q.N, true); dv.setUint32(8, mod.rank, true); dv.setUint32(12, 0, true);
     dv.setFloat32(16, mod.scale, true);
     const groups = Math.min(Math.ceil((T * q.N) / 256), 65535);
-    const bgB = this._bg(this.pipes.loraBAddT, [this.sT.loraD, mod.B, yBuf, this._uni(new Uint8Array(meta))]);
+    const uB = this._uni(new Uint8Array(meta));
+    const bgB = this._bg(this.pipes.loraBAddT, [this.sT.loraD, mod.B, yBuf, uB]);
     this._dispatch(enc, this.pipes.loraBAddT, bgB, groups, 1, 'loraB:T');
   }
   rmsT(enc, xBuf, gBuf, yBuf, T, K) {
     const u = new ArrayBuffer(8); const dv = new DataView(u); dv.setFloat32(0, K, true); dv.setFloat32(4, this.cfg.rmsNormEps, true);
-    this._dispatch(enc, this.pipes.rmsT, this._bg(this.pipes.rmsT, [xBuf, gBuf, yBuf, this._uni(new Uint8Array(u))]), T, 1, 'rmsT');
+    const uni = this._uni(new Uint8Array(u));
+    this._dispatch(enc, this.pipes.rmsT, this._bg(this.pipes.rmsT, [xBuf, gBuf, yBuf, uni]), T, 1, 'rmsT');
   }
   ropeT(enc, xBuf, T, nHeads) {
     const hd = this.cfg.headDim;
-    this._dispatch(enc, this.pipes.ropeT, this._bg(this.pipes.ropeT, [xBuf, this.ropeCos, this.ropeSin, this._uni(new Uint32Array([nHeads, hd, T, 0]))]), Math.ceil(T * nHeads * (hd / 2) / 256), 1, 'ropeT');
+    const uni = this._uni(new Uint32Array([nHeads, hd, T, 0]));
+    this._dispatch(enc, this.pipes.ropeT, this._bg(this.pipes.ropeT, [xBuf, this.ropeCos, this.ropeSin, uni]), Math.ceil(T * nHeads * (hd / 2) / 256), 1, 'ropeT');
   }
   attnPrefill(enc, qBuf, kc, vc, oBuf, T) {
     const c = this.cfg;
-    this._dispatch(enc, this.pipes.attnPrefill, this._bg(this.pipes.attnPrefill, [qBuf, kc, vc, oBuf, this._uni(new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T]))]), c.numHeads, T, 'attnPrefill');
+    const uni = this._uni(new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T]));
+    this._dispatch(enc, this.pipes.attnPrefill, this._bg(this.pipes.attnPrefill, [qBuf, kc, vc, oBuf, uni]), c.numHeads, T, 'attnPrefill');
   }
 
   // (re)allocate prefill scratch sized to T (grows as needed; only paid when prefilling).
   _ensurePrefillScratch(T, loraRank = 0) {
     if (this.sTcap >= T && (this.sTLoraRank || 0) >= loraRank) return;
+    const need = this.estimatePrefillScratchBytes(T, loraRank);
+    if (this.opts.maxPrefillScratchBytes && need > this.opts.maxPrefillScratchBytes) {
+      throw new Error(`prefill scratch ${Math.ceil(need / 1048576)}MiB exceeds maxPrefillScratchBytes; lower maxPrefillT or use shorter prompt chunks`);
+    }
     if (this.sT) for (const k in this.sT) this.sT[k].destroy();
     const c = this.cfg, H = c.hiddenSize, qd = c.numHeads * c.headDim, kvd = c.numKVHeads * c.headDim, I = c.intermediateSize;
     this.sT = {
@@ -342,7 +481,8 @@ export class QwenWGPU {
     this.dev.queue.writeBuffer(ST.ids, 0, new Uint32Array(ids));
     const enc = this.dev.createCommandEncoder();
     const e = this.q[this.plan.embed.name];
-    this._dispatch(enc, this.pipes.embedT, this._bg(this.pipes.embedT, [e.w, e.scale, ST.hidden, ST.ids, this._uni(new Uint32Array([T, H]))]), Math.min(Math.ceil(T * H / 256), 65535), 1, 'embedT');
+    const embedUni = this._uni(new Uint32Array([T, H]));
+    this._dispatch(enc, this.pipes.embedT, this._bg(this.pipes.embedT, [e.w, e.scale, ST.hidden, ST.ids, embedUni]), Math.min(Math.ceil(T * H / 256), 65535), 1, 'embedT');
     for (let i = 0; i < c.numLayers; i++) {
       const L = this.plan.layers[i];
       this.rmsT(enc, ST.hidden, this.bufs[L.inputNorm], ST.normed, T, H);

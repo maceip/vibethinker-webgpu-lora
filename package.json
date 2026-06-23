@@ -19,6 +19,9 @@
     "test:correctness": "esbuild test/validate_wgpu.js --bundle --format=esm --platform=browser --outfile=test/vwg_bundle.js && node test/run_vwg.mjs",
     "test:lora": "esbuild test/lora_validate.js --bundle --format=esm --platform=browser --outfile=test/lorav_bundle.js && node test/run_lorav.mjs",
     "test:app": "node test/run_app_e2e.mjs",
-    "test:prefill": "esbuild test/prefill_diff.js --bundle --format=esm --platform=browser --outfile=test/prefdiff_bundle.js && node test/run_prefdiff.mjs"
+    "test:prefill": "esbuild test/prefill_diff.js --bundle --format=esm --platform=browser --outfile=test/prefdiff_bundle.js && node test/run_prefdiff.mjs",
+    "test:sampling": "esbuild test/sampling_wgpu.js --bundle --format=esm --platform=browser --outfile=test/sampling_bundle.js && node test/run_sampling.mjs",
+    "test:topk-argmax": "esbuild test/topk_argmax_ties.js --bundle --format=esm --platform=browser --outfile=test/topk_argmax_ties_bundle.js && node test/run_topk_argmax_ties.mjs",
+    "bench:wgpu": "esbuild test/benchmark_wgpu.js --bundle --format=esm --platform=browser --outfile=test/bench_bundle.js && node test/run_bench.mjs"
   }
 }
