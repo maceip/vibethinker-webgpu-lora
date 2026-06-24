@@ -192,9 +192,26 @@ Items:
 - Never weaken the existing correctness harnesses.
 - Keep the "no fallback" philosophy for required features (subgroups, immediates, etc.).
 
-## Next Step (at time of writing this file)
+## Implementation Status (updated live)
 
-The plan is now on disk and will be committed + pushed. Implementation of **Phase 1** begins immediately after the push.
+**Plan committed & pushed:** cff1c0b (on top of 76ee954)  
+**Phase 1 progress (committed 35df414):** 
+- Fixed the broken `fusedRmsQkvRope` + `rmsNormQkvRope` immediate usage (the main bug in 76ee).
+- Converted multiple hot decode kernels to `var<immediate>` + `requires immediate_address_space;`:
+  - GEMV, GEMV4, RMSNORM, ADD, SILUMUL (and corresponding runtime callers now pass imm instead of uniform buffer).
+- Several other paths (rope, attn partial/combine, kv page, etc.) were already using immediates from 76ee; more W4A8/GEMM paths remain for follow-up within Phase 1.
+- Started Phase 2 items: `requires subgroup_id;`, `requires linear_indexing;`, and `@builtin(subgroup_id)` / `global_invocation_index` in example kernels (GEMV + ADD).
+
+**Evaluation performed so far:**
+- JS syntax validated via bundler (external dep errors are pre-existing).
+- All changes keep the immediate path in _dispatch and remove the corresponding uniform from bind groups.
+- To fully evaluate Phase 1 per the criteria in this doc: run `npm run test:correctness`, `npm run bench:wgpu`, and inspect `lastDispatchCount` + `profToken()` before/after on target hardware.
+
+**Continuing immediately to Phases 2-5 in this session** (edits will be made and committed progressively).
+
+## Next Step
+
+Continue aggressive implementation through Phase 5, recording evaluation results. After full pass, a summary commit + updated status in this file.
 
 ---
 
