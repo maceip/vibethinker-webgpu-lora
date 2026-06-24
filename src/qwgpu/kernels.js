@@ -51,10 +51,11 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 // contiguous → coalesced reads. One workgroup per rank output, subgroup reduce.
 export const LORA_A = `
 enable subgroups;
+requires immediate_address_space;
 @group(0) @binding(0) var<storage,read> x: array<f32>;     // [K]
 @group(0) @binding(1) var<storage,read> A: array<f32>;     // [rank][K] (transposed)
 @group(0) @binding(2) var<storage,read_write> d: array<f32>; // [rank]
-@group(0) @binding(3) var<uniform> m: vec2<u32>;           // K, rank
+var<immediate> m: vec2<u32>;           // K, rank
 var<workgroup> part: array<f32,64>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
@@ -72,10 +73,11 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 // D[t,r] = X[t,:] @ A[r,:]. A layout matches decode LORA_A: [rank][K].
 export const LORA_A_BATCH = `
 enable subgroups;
+requires immediate_address_space;
 @group(0) @binding(0) var<storage,read> x: array<f32>;       // [T][K]
 @group(0) @binding(1) var<storage,read> A: array<f32>;       // [rank][K]
 @group(0) @binding(2) var<storage,read_write> d: array<f32>; // [T][rank]
-@group(0) @binding(3) var<uniform> m: vec4<u32>;             // K, rank, T, _
+var<immediate> m: vec4<u32>;             // K, rank, T, _
 var<workgroup> part: array<f32,64>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,

@@ -745,16 +745,17 @@ export class QwenWGPU {
   }
 
   _loraA(enc, xBuf, q, mod, dBuf, moduleKey, label = 'loraA') {
-    const uA = this._staticUni(`loraA:${this._loraEpoch}:${q.K}:${mod.rank}`, new Uint32Array([q.K, mod.rank]));
+    const imm = new Uint32Array([q.K, mod.rank]);
     this._dispatch(
       enc,
       this.pipes.loraA,
-      this._bgCached(this.pipes.loraA, [xBuf, mod.A, dBuf, uA], `${label}:${moduleKey}:${this._loraEpoch}`, {
+      this._bgCached(this.pipes.loraA, [xBuf, mod.A, dBuf], `${label}:${moduleKey}:${this._loraEpoch}`, {
         sensitive: true,
       }),
       mod.rank,
       1,
       label,
+      imm,
     );
     if (this.debugCapture && moduleKey === 'layers.0.self_attn.q_proj' && this.debugStep < this.debugT) {
       enc.copyBufferToBuffer(xBuf, 0, this.debugBufs.xSeq, this.debugStep * q.K * 4, q.K * 4);
@@ -1507,9 +1508,9 @@ export class QwenWGPU {
   }
   loraBatchDelta(enc, xBuf, yBuf, q, T, mod, moduleKey) {
     if (this.debugCapture) console.log('VWG loraBatchDelta: ' + moduleKey + ' mod=' + !!mod);
-    const uA = this._uni(new Uint32Array([q.K, mod.rank, T, 0]));
-    const bgA = this._bg(this.pipes.loraABatch, [xBuf, mod.A, this.sT.loraD, uA]);
-    this._dispatch(enc, this.pipes.loraABatch, bgA, mod.rank, T, 'loraA:T');
+    const imm = new Uint32Array([q.K, mod.rank, T, 0]);
+    const bgA = this._bg(this.pipes.loraABatch, [xBuf, mod.A, this.sT.loraD]);
+    this._dispatch(enc, this.pipes.loraABatch, bgA, mod.rank, T, 'loraA:T', imm);
     if (this.debugCapture && moduleKey === 'layers.0.self_attn.q_proj') {
       enc.copyBufferToBuffer(xBuf, 0, this.debugBufs.xBat, 0, T * q.K * 4);
       enc.copyBufferToBuffer(this.sT.loraD, 0, this.debugBufs.dBat, 0, T * mod.rank * 4);
