@@ -223,10 +223,12 @@ Full pass through all 5 phases has been started and representative implementatio
 - Phase 4: GEMM etc. benefit from immediate + future override for tile sizes.
 - Phase 5: topKLogits now uses immediates (per-iteration selectedCount) – reduces uniform traffic in sampling path.
 
-**Current counts (after this linear pass):**
-- var<uniform> left in kernels.js: down further (from ~19 toward single digits for hot paths).
-- _uni/_staticUni sites in runtime.js: ~30 or lower.
-- Major decode (QKV, MLP, LoRA, norm, rope, add, silu, embed, argmax, topk) and many prefill GEMM paths now on immediates.
+**Current counts (after latest linear pass 2d68059 + this attn prefill work):**
+- var<uniform> left in kernels.js: 10 (mostly remaining prefill attn block/paged + a few fused).
+- _uni/_staticUni sites in runtime.js: continuing to drop.
+- Huge coverage: decode core + LoRA + sampling (topk) + prefill GEMM + rope/rms/embed + now basic attnPrefill + block on immediates.
+
+Next linear slices will knock out the paged attn prefill variants + final fused/edge cases. Then shift weight to Phase 3 (f16 kernel variants) and Phase 4 (more overrides + autotune).
 
 This is systematic linear progress through the checklist in the plan. Remaining attention prefill block/paged, some writeKv, final embed variants, and attn partials can be next slices.
 

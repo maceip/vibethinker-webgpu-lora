@@ -1558,29 +1558,26 @@ export class QwenWGPU {
   attnPrefill(enc, qBuf, kc, vc, oBuf, T, qStart = 0, ctx = T) {
     const c = this.cfg;
     if (this.features.prefillAttention === 'block' || qStart !== 0 || ctx !== T) {
-      const meta = new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T, qStart, ctx, 0, 0]);
+      const imm = new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T, qStart, ctx, 0, 0]);
       this._dispatch(
         enc,
         this.pipes.attnPrefillBlock,
-        this._bg(this.pipes.attnPrefillBlock, [qBuf, kc, vc, oBuf, this._uni(meta)]),
+        this._bg(this.pipes.attnPrefillBlock, [qBuf, kc, vc, oBuf]),
         c.numHeads,
         Math.ceil(T / 4),
         'attnPrefillBlock',
+        imm,
       );
     } else {
+      const imm = new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T]);
       this._dispatch(
         enc,
         this.pipes.attnPrefill,
-        this._bg(this.pipes.attnPrefill, [
-          qBuf,
-          kc,
-          vc,
-          oBuf,
-          this._uni(new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T])),
-        ]),
+        this._bg(this.pipes.attnPrefill, [qBuf, kc, vc, oBuf]),
         c.numHeads,
-        T,
+        Math.ceil(T / 4),
         'attnPrefill',
+        imm
       );
     }
   }

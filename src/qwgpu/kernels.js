@@ -475,11 +475,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 // sc[ctx] array would be 32KB at 8192 = the entire workgroup-storage budget).
 export const ATTN_PREFILL = `
 enable subgroups;
+requires immediate_address_space;
 @group(0) @binding(0) var<storage,read> q: array<f32>;       // [T][nHeads*hd]
 @group(0) @binding(1) var<storage,read> kc: array<f32>;      // [ctx][nKV*hd]
 @group(0) @binding(2) var<storage,read> vc: array<f32>;
 @group(0) @binding(3) var<storage,read_write> o: array<f32>; // [T][nHeads*hd]
-@group(0) @binding(4) var<uniform> m: vec4<u32>;             // nHeads, nKV, hd, T
+var<immediate> m: vec4<u32>;             // nHeads, nKV, hd, T
 var<workgroup> ps: array<f32,256>;   // exp-scores for the current key block
 var<workgroup> acc: array<f32,128>;  // running weighted-V accumulator (hd<=128)
 var<workgroup> red: array<f32,64>;
@@ -528,12 +529,13 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 // global caches indexed by absolute position.
 export const ATTN_PREFILL_BLOCK = `
 enable subgroups;
+requires immediate_address_space;
 struct Meta { nHeads:u32, nKV:u32, hd:u32, T:u32, qStart:u32, ctx:u32, p0:u32, p1:u32 };
 @group(0) @binding(0) var<storage,read> q: array<f32>;
 @group(0) @binding(1) var<storage,read> kc: array<f32>;
 @group(0) @binding(2) var<storage,read> vc: array<f32>;
 @group(0) @binding(3) var<storage,read_write> o: array<f32>;
-@group(0) @binding(4) var<uniform> m: Meta;
+var<immediate> m: Meta;
 const BQ = 4u; const BK = 128u;
 var<workgroup> ps: array<f32, 512>;    // BQ*BK
 var<workgroup> acc: array<f32, 512>;   // BQ*hd (hd<=128)
