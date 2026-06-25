@@ -98,6 +98,7 @@ export class QwenWGPU {
     this._loraEpoch = 0;
     this.lastDispatchCount = 0;
     this.packedBytes = 0;
+    this.workgroupAutotunePromise = null;
     this._argmaxReadBusy = false;
     this._topKReadBusy = false;
   }
@@ -159,9 +160,13 @@ export class QwenWGPU {
     const useTS = this.hasTimestampQuery;
 
     // Precise GPU time helper (uses its own tiny query set when possible).
-    const timeKernel = async (pipe, n, label) => {
+    const timeKernel = async (spec, pipe, label) => {
+      const n = spec.n;
       const a = this._buf(n * 4);
+      const g = this._buf(n * 4);
       const y = this._buf(n * 4);
+      const buffers = spec.buffers(a, y, g);
+      const imm = spec.imm(n);
 
       let gpuMs = 0;
       let usedGPU = false;
@@ -175,8 +180,7 @@ export class QwenWGPU {
         const tWall0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
         for (let i = 0; i < iters; i++) {
           const enc = this.dev.createCommandEncoder();
-          const bg = this._bg(pipe, [a, y]);
-          const imm = new Uint32Array([n]);
+          const bg = this._bg(pipe, buffers);
 
           // manual pass with ts
           const p = enc.beginComputePass({
@@ -209,7 +213,7 @@ export class QwenWGPU {
         qs.destroy?.();
         usedGPU = true;
         // cleanup buffers
-        a.destroy?.(); y.destroy?.();
+        a.destroy?.(); g.destroy?.(); y.destroy?.();
         return (gpuMs / iters) / 1000;  // ms
       }
 
@@ -217,22 +221,21 @@ export class QwenWGPU {
       const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
       for (let i = 0; i < iters; i++) {
         const enc = this.dev.createCommandEncoder();
-        const bg = this._bg(pipe, [a, y]);
-        const imm = new Uint32Array([n]);
+        const bg = this._bg(pipe, buffers);
         this._dispatch(enc, pipe, bg, Math.ceil(n / (pipe.__wg || 256)), 1, label + ':bench', imm);
         this.dev.queue.submit([enc.finish()]);
         if (this.dev.queue.onSubmittedWorkDone) await this.dev.queue.onSubmittedWorkDone();
       }
       const ms = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
-      a.destroy?.(); y.destroy?.();
+      a.destroy?.(); g.destroy?.(); y.destroy?.();
       return ms / iters;
     };
 
     // Autotune a few hot, override-friendly kernels (add, rms, silu).
     const kernels = [
-      { name: 'add', src: ADD, n: 8192 },
-      { name: 'rms', src: RMSNORM, n: 4096 },
-      { name: 'silu', src: SILUMUL, n: 8192 },
+      { name: 'add', src: ADD, n: 8192, buffers: (a, y) => [a, y], imm: (n) => new Uint32Array([n]) },
+      { name: 'rms', src: RMSNORM, n: 4096, buffers: (a, y, g) => [a, g, y], imm: (n) => new Float32Array([n, this.cfg.rmsNormEps]) },
+      { name: 'silu', src: SILUMUL, n: 8192, buffers: (a, y) => [a, y], imm: (n) => new Uint32Array([n]) },
     ];
 
     for (const k of kernels) {
@@ -241,7 +244,7 @@ export class QwenWGPU {
         for (const wg of cands) {
           const p = this._pipe(k.src, `${k.name}:autotune:${wg}`, { WG: wg });
           p.__wg = wg;
-          const ms = await timeKernel(p, k.n, `${k.name}${wg}`);
+          const ms = await timeKernel(k, p, `${k.name}${wg}`);
           results[`${k.name}:${wg}`] = ms;
           if (ms < best.ms) best = { wg, ms };
         }
@@ -295,11 +298,14 @@ export class QwenWGPU {
     });
     const comp = { module: m, entryPoint: 'main' };
     if (overrides && typeof overrides === 'object') comp.constants = overrides;
-    return this.dev.createComputePipeline({
+    const pipe = this.dev.createComputePipeline({
       label: name ? `${name}-pipeline` : undefined,
       layout: 'auto',
       compute: comp,
     });
+    if (overrides?.WG) pipe.__wg = overrides.WG;
+    if (name) pipe.__name = name;
+    return pipe;
   }
 
   /*
@@ -517,7 +523,9 @@ export class QwenWGPU {
     if (!this._didAutoWG) {
       this._didAutoWG = true;
       // fire-and-forget a tiny one; does not block "ready"
-      this.autotuneWorkgroups({ iters: 2, apply: true }).catch(() => {});
+      this.workgroupAutotunePromise = this.autotuneWorkgroups({ iters: 2, apply: true }).catch((e) => ({
+        error: String(e),
+      }));
     }
 
     return this;
@@ -1119,15 +1127,9 @@ export class QwenWGPU {
     }
   }
 
-  gateUpSiluGemv4W4A8(enc, xBuf, x_qBuf, scale_xBuf, packed, yBuf, L) {
-    const gate = this.q4[L.gate.weight],
-      up = this.q4[L.up.weight];
-    const gateMod = this.lora?.modules?.[L.gate.loraKey];
-    const upMod = this.lora?.modules?.[L.up.loraKey];
-    if (gateMod) this._loraA(enc, xBuf, gate, gateMod, this.s.loraD, L.gate.loraKey, 'loraA:gate');
-    if (upMod) this._loraA(enc, xBuf, up, upMod, this.s.loraD2, L.up.loraKey, 'loraA:up');
-    const gx = Math.min(packed.N, 65535);
-    const m0 = new Uint32Array([
+  _gateUpImmediate(packed, gx, gateMod, upMod) {
+    const imm = new Uint32Array(12);
+    imm.set([
       packed.K,
       packed.N,
       packed.gpr,
@@ -1137,7 +1139,21 @@ export class QwenWGPU {
       gateMod ? 1 : 0,
       upMod ? 1 : 0,
     ]);
-    const m1 = new Float32Array([gateMod ? gateMod.scale : 0, upMod ? upMod.scale : 0, 0, 0]);
+    const f32 = new Float32Array(imm.buffer);
+    f32[8] = gateMod ? gateMod.scale : 0;
+    f32[9] = upMod ? upMod.scale : 0;
+    return imm;
+  }
+
+  gateUpSiluGemv4W4A8(enc, xBuf, x_qBuf, scale_xBuf, packed, yBuf, L) {
+    const gate = this.q4[L.gate.weight],
+      up = this.q4[L.up.weight];
+    const gateMod = this.lora?.modules?.[L.gate.loraKey];
+    const upMod = this.lora?.modules?.[L.up.loraKey];
+    if (gateMod) this._loraA(enc, xBuf, gate, gateMod, this.s.loraD, L.gate.loraKey, 'loraA:gate');
+    if (upMod) this._loraA(enc, xBuf, up, upMod, this.s.loraD2, L.up.loraKey, 'loraA:up');
+    const gx = Math.min(packed.N, 65535);
+    const imm = this._gateUpImmediate(packed, gx, gateMod, upMod);
     const bg = this._bgCached(
       this.pipes.gateUpSiluGemv4W4A8,
       [
@@ -1161,7 +1177,7 @@ export class QwenWGPU {
       gx,
       Math.ceil(packed.N / gx),
       `guw4a8:${packed.N}x${packed.K}`,
-      [m0, m1],
+      imm,
     );
   }
 
@@ -1260,9 +1276,8 @@ export class QwenWGPU {
       S.po,
       S.blockTableBuf,
     ]);
-    const immP = new Uint32Array([c.numHeads, c.numKVHeads, ctx, c.headDim]);
-    const immP2 = new Uint32Array([nsplit, this.CHUNK, 0, this.pam.maxBlocksPerSeq]);
-    this._dispatch(enc, this.pipes.attnPartialPaged, bgP, c.numHeads, nsplit, 'attnP_paged', [immP, immP2]);
+    const immP = new Uint32Array([c.numHeads, c.numKVHeads, ctx, c.headDim, nsplit, this.CHUNK, 0, this.pam.maxBlocksPerSeq]);
+    this._dispatch(enc, this.pipes.attnPartialPaged, bgP, c.numHeads, nsplit, 'attnP_paged', immP);
     const useF16C = this.usingF16() && this.pipes.attnCF16;
     const pipeC = useF16C ? this.pipes.attnCF16 : this.pipes.attnC;
     const bgC = this._bg(pipeC, [
@@ -1289,8 +1304,7 @@ export class QwenWGPU {
         imm,
       );
     } else {
-      const imm1 = new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T]);
-      const imm2 = new Uint32Array([0, this.pam.maxBlocksPerSeq]);
+      const imm = new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T, 0, this.pam.maxBlocksPerSeq, 0, 0]);
       this._dispatch(
         enc,
         this.pipes.attnPrefillPaged,
@@ -1304,7 +1318,7 @@ export class QwenWGPU {
         c.numHeads,
         T,
         'attnPrefillPaged',
-        [imm1, imm2],
+        imm,
       );
     }
   }
@@ -1376,17 +1390,7 @@ export class QwenWGPU {
     if (gateMod) this._loraA(enc, xBuf, gate, gateMod, this.s.loraD, L.gate.loraKey, 'loraA:gate');
     if (upMod) this._loraA(enc, xBuf, up, upMod, this.s.loraD2, L.up.loraKey, 'loraA:up');
     const gx = Math.min(packed.N, 65535);
-    const m0 = new Uint32Array([
-      packed.K,
-      packed.N,
-      packed.gpr,
-      gx,
-      gateMod ? gateMod.rank : 0,
-      upMod ? upMod.rank : 0,
-      gateMod ? 1 : 0,
-      upMod ? 1 : 0,
-    ]);
-    const m1 = new Float32Array([gateMod ? gateMod.scale : 0, upMod ? upMod.scale : 0, 0, 0]);
+    const imm = this._gateUpImmediate(packed, gx, gateMod, upMod);
     const bg = this._bgCached(
       this.pipes.gateUpSiluGemv4,
       [
@@ -1402,7 +1406,7 @@ export class QwenWGPU {
       `gu:${L.index}:${this._loraEpoch}:${gateMod ? 1 : 0}:${upMod ? 1 : 0}`,
       { sensitive: !!(gateMod || upMod) },
     );
-    this._dispatch(enc, this.pipes.gateUpSiluGemv4, bg, gx, Math.ceil(packed.N / gx), `gu:${packed.N}x${packed.K}`, [m0, m1]);
+    this._dispatch(enc, this.pipes.gateUpSiluGemv4, bg, gx, Math.ceil(packed.N / gx), `gu:${packed.N}x${packed.K}`, imm);
   }
   rms(enc, xBuf, gBuf, yBuf, K) {
     const imm = new Float32Array([K, this.cfg.rmsNormEps]);
@@ -1588,14 +1592,16 @@ export class QwenWGPU {
     const useF16 = this.usingF16() && this.pipes.addF16;
     const pipe = useF16 ? this.pipes.addF16 : this.pipes.add;
     const bg = this._bgCached(pipe, [aBuf, yBuf], `add:${n}${useF16 ? ':f16' : ''}`);
-    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / 256), 65535), 1, useF16 ? 'addF16' : 'add', imm);
+    const wg = pipe.__wg || 256;
+    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / wg), 65535), 1, useF16 ? 'addF16' : 'add', imm);
   }
   _siluMul(enc, gateBuf, upBuf, n) {
     const imm = new Uint32Array([n]);
     const useF16 = this.usingF16() && this.pipes.siluF16;
     const pipe = useF16 ? this.pipes.siluF16 : this.pipes.silu;
     const bg = this._bgCached(pipe, [gateBuf, upBuf], `silu:${n}${useF16 ? ':f16' : ''}`);
-    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / 256), 65535), 1, useF16 ? 'siluF16' : 'silu', imm);
+    const wg = pipe.__wg || 256;
+    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / wg), 65535), 1, useF16 ? 'siluF16' : 'silu', imm);
   }
   embedRow(enc, id) {
     const e = this.q[this.plan.embed.name];
@@ -1721,9 +1727,12 @@ export class QwenWGPU {
         this.s.sampleVals,
         this.s.sampled,
       ]);
-      const immK = new Uint32Array([k]);
-      const immP = new Float32Array([temp > 0 ? temp : 1.0, Math.max(0, Math.min(1, r))]);
-      this._dispatch(enc, this.pipes.sampleTopK, bg, 1, 1, 'sampleTopK', [immK, immP]);
+      const imm = new Uint32Array(4);
+      imm[0] = k;
+      const f32 = new Float32Array(imm.buffer);
+      f32[2] = temp > 0 ? temp : 1.0;
+      f32[3] = Math.max(0, Math.min(1, r));
+      this._dispatch(enc, this.pipes.sampleTopK, bg, 1, 1, 'sampleTopK', imm);
 
       // Only the final chosen id comes back.
       enc.copyBufferToBuffer(this.s.sampled, 0, this.sampledRead, 0, 4);
@@ -1764,13 +1773,15 @@ export class QwenWGPU {
   }
   // argmax(logits) -> s.amax, within the given encoder (no submit/readback)
   argmaxInto(enc) {
+    const n = this.cfg.vocabSize || 0;
     this._dispatch(
       enc,
       this.pipes.argmax,
-      this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], 'argmax'),
+      this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax], 'argmax'),
       1,
       1,
       'argmax',
+      new Uint32Array([n]),
     );
   }
 

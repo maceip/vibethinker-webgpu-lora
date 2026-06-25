@@ -263,6 +263,11 @@ var AdapterRegistry = class {
   get(name) {
     return this.adapters[name] || null;
   }
+  /*
+   * TECHNIQUE: Runtime adapter swapping via setLora
+   *   Registry holds pre-uploaded A/B buffers. applyToRuntime calls
+   *   rt.setLora which just swaps references — no weight reload.
+   */
   applyToRuntime(name, rt) {
     const adapter = this.get(name);
     if (adapter) rt.setLora(adapter);
@@ -283,6 +288,11 @@ var GenerationController = class {
     this.systemPrompt = systemPrompt;
     this.log = log2;
   }
+  /*
+   * TECHNIQUE: Streaming text output with TextNode append (O(n) not O(n^2))
+   *   Uses a single Text node and appends characters instead of setting
+   *   .textContent repeatedly. Avoids quadratic cost during long generations.
+   */
   async runTriage({ adapterName, report, outputNode, maxTemperature = 0 }) {
     const rt = this.session.rt;
     if (!rt) return;
@@ -426,11 +436,11 @@ var<workgroup> part: array<f32,256>;
 @compute @workgroup_size(WG)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x);
-  var s = 0.0; for (var k = tid; k < K; k = k + 256u) { let v = x[k]; s = s + v*v; }
+  var s = 0.0; for (var k = tid; k < K; k = k + WG) { let v = x[k]; s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/m.x + m.y);
-  for (var k = tid; k < K; k = k + 256u) { y[k] = x[k]*inv*g[k]; }
+  for (var k = tid; k < K; k = k + WG) { y[k] = x[k]*inv*g[k]; }
 }`;
 var RMSNORM_F16 = `
 requires immediate_address_space;
@@ -445,11 +455,11 @@ var<workgroup> part: array<f16,256>;
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x);
   var s = 0.0h;
-  for (var k = tid; k < K; k = k + 256u) { let v = f16(x[k]); s = s + v*v; }
+  for (var k = tid; k < K; k = k + WG) { let v = f16(x[k]); s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/f16(m.x) + f16(m.y));
-  for (var k = tid; k < K; k = k + 256u) { y[k] = f32( f16(x[k]) * inv * f16(g[k]) ); }
+  for (var k = tid; k < K; k = k + WG) { y[k] = f32( f16(x[k]) * inv * f16(g[k]) ); }
 }`;
 var ROPE = `
 requires immediate_address_space;
@@ -787,12 +797,13 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw
 }`;
 var SILUMUL = `
 requires immediate_address_space;
+override WG: u32 = 256u;
 @group(0) @binding(0) var<storage,read_write> gate: array<f32>;
 @group(0) @binding(1) var<storage,read> up: array<f32>;
 var<immediate> n: u32;
-@compute @workgroup_size(256)
+@compute @workgroup_size(WG)
 fn main(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-  let stride = nwg.x * 256u;
+  let stride = nwg.x * WG;
   for (var i = g.x; i < n; i = i + stride) { let v = gate[i]; gate[i] = (v/(1.0+exp(-v)))*up[i]; }
 }`;
 var EMBED = `
@@ -833,11 +844,11 @@ var<workgroup> part: array<f32,256>;
 @compute @workgroup_size(WG)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x); let base = wid.x * K;
-  var s = 0.0; for (var k = tid; k < K; k = k + 256u) { let v = x[base+k]; s = s + v*v; }
+  var s = 0.0; for (var k = tid; k < K; k = k + WG) { let v = x[base+k]; s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/m.x + m.y);
-  for (var k = tid; k < K; k = k + 256u) { y[base+k] = x[base+k]*inv*g[k]; }
+  for (var k = tid; k < K; k = k + WG) { y[base+k] = x[base+k]*inv*g[k]; }
 }`;
 var RMSNORM_T_F16 = `
 requires immediate_address_space;
@@ -852,11 +863,11 @@ var<workgroup> part: array<f16,256>;
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x); let base = wid.x * K;
   var s = 0.0h;
-  for (var k = tid; k < K; k = k + 256u) { let v = f16(x[base+k]); s = s + v*v; }
+  for (var k = tid; k < K; k = k + WG) { let v = f16(x[base+k]); s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/f16(m.x) + f16(m.y));
-  for (var k = tid; k < K; k = k + 256u) { y[base+k] = f32( f16(x[base+k]) * inv * f16(g[k]) ); }
+  for (var k = tid; k < K; k = k + WG) { y[base+k] = f32( f16(x[base+k]) * inv * f16(g[k]) ); }
 }`;
 var ROPE_T = `
 requires immediate_address_space;
@@ -1086,43 +1097,44 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 }`;
 var SAMPLE_TOPK = `
 requires immediate_address_space;
+struct Meta { k:u32, pad:u32, temp:f32, r:f32 };
 @group(0) @binding(0) var<storage,read> ids: array<u32>;
 @group(0) @binding(1) var<storage,read> vals: array<f32>;
 @group(0) @binding(2) var<storage,read_write> outId: array<u32>;  // [1] the chosen token
-var<immediate> m: u32;         // k (number of valid top entries)
-var<immediate> params: vec2<f32>; // temp, r (uniform [0,1))
-var<workgroup> s: array<f32, 64>;  // working softmax probs (small k)
+var<immediate> m: Meta;
+var<workgroup> s: array<f32, 64>;    // working softmax probs / prefix sums (small k)
+var<workgroup> red: array<f32, 64>;  // reduction scratch for the softmax denominator
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x;
-  let k = m;
-  let temp = params.x;
-  let r = params.y;
-  let t = (temp > 0.0) ? temp : 1.0;
+  let k = m.k;
+  let temp = m.temp;
+  let r = m.r;
+  let t = select(temp, 1.0, temp <= 0.0);
 
   // Load + temperature scale into shared (one thread per slot)
   var v = -1e30;
   if (tid < k) {
     let lv = vals[tid];
-    v = (t != 1.0) ? (lv / t) : lv;
+    v = lv;
+    if (t != 1.0) { v = lv / t; }
   }
-  s[tid] = select(0.0, exp(v), tid < k);
+  let ev = select(0.0, exp(v), tid < k);
+  s[tid] = ev;
+  red[tid] = ev;
   workgroupBarrier();
 
   // sum
   for (var stride = 32u; stride > 0u; stride = stride / 2u) {
-    if (tid < stride && (tid + stride) < 64u) { s[tid] = s[tid] + s[tid + stride]; }
+    if (tid < stride && (tid + stride) < 64u) { red[tid] = red[tid] + red[tid + stride]; }
     workgroupBarrier();
   }
-  let sum = s[0];
-  if (sum <= 0.0) {
-    if (tid == 0u) { outId[0] = (k > 0u ? ids[0] : 0u); }
-    return;
-  }
+  let sum = red[0];
+  let invSum = select(0.0, 1.0 / sum, sum > 0.0);
 
   // normalize + prefix sum for nucleus / categorical pick
   if (tid < k) {
-    s[tid] = s[tid] / sum;
+    s[tid] = s[tid] * invSum;
   } else {
     s[tid] = 0.0;
   }
@@ -1130,21 +1142,27 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 
   // prefix sum (small k, simple scan)
   for (var stride = 1u; stride < 64u; stride = stride * 2u) {
+    var add = 0.0;
     if (tid >= stride && tid < 64u) {
-      s[tid] = s[tid] + s[tid - stride];
+      add = s[tid - stride];
+    }
+    workgroupBarrier();
+    if (tid >= stride && tid < 64u) {
+      s[tid] = s[tid] + add;
     }
     workgroupBarrier();
   }
 
   // find the smallest j such that prefix[j] >= r  (or last if r>=1)
   if (tid == 0u) {
-    var chosen = k - 1u;
-    var acc = 0.0;
-    for (var j = 0u; j < k; j = j + 1u) {
-      let pj = s[j];
-      if (r <= pj) { chosen = j; break; }
+    var chosen = select(0u, k - 1u, k > 0u);
+    if (sum > 0.0) {
+      for (var j = 0u; j < k; j = j + 1u) {
+        let pj = s[j];
+        if (r <= pj) { chosen = j; break; }
+      }
     }
-    outId[0] = ids[chosen];
+    outId[0] = select(0u, ids[chosen], k > 0u);
   }
 }`;
 var GEMV4 = `
@@ -1287,8 +1305,7 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 var GATE_UP_SILU_GEMV4 = `
 enable subgroups;
 requires immediate_address_space;
-struct Meta0 { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32 };
-struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
+struct Meta { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32, gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(0) var<storage,read> x: array<f32>;
 @group(0) @binding(1) var<storage,read> w: array<u32>;
 @group(0) @binding(2) var<storage,read> scale: array<f32>;
@@ -1297,17 +1314,16 @@ struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(5) var<storage,read> gateB: array<f32>;
 @group(0) @binding(6) var<storage,read> upD: array<f32>;
 @group(0) @binding(7) var<storage,read> upB: array<f32>;
-var<immediate> m0: Meta0;
-var<immediate> m1: Meta1;
+var<immediate> m: Meta;
 var<workgroup> partG: array<f32,64>;
 var<workgroup> partU: array<f32,64>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
-  let n = wid.x + wid.y * m0.gridX; let tid = lid.x;
-  if (n >= m0.N) { return; }
-  let K8 = m0.K/8u; let rbG = n*K8; let rbU = (m0.N + n)*K8;
-  let sbG = n*m0.gpr; let sbU = (m0.N + n)*m0.gpr;
+  let n = wid.x + wid.y * m.gridX; let tid = lid.x;
+  if (n >= m.N) { return; }
+  let K8 = m.K/8u; let rbG = n*K8; let rbU = (m.N + n)*K8;
+  let sbG = n*m.gpr; let sbU = (m.N + n)*m.gpr;
   var accG = 0.0; var accU = 0.0;
   for (var c = tid; c < K8; c = c + 64u) {
     let bk = c*8u; let wg = w[rbG+c]; let wu = w[rbU+c];
@@ -1327,13 +1343,13 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   if (tid == 0u) {
     let nsg = (64u + sgsz - 1u) / sgsz; var gate = 0.0; var up = 0.0;
     for (var i = 0u; i < nsg; i = i + 1u) { gate = gate + partG[i]; up = up + partU[i]; }
-    if (m0.hasGateLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m0.N + n]; }
-      gate = gate + m1.gateScaleLo * dl;
+    if (m.hasGateLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m.N + n]; }
+      gate = gate + m.gateScaleLo * dl;
     }
-    if (m0.hasUpLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m0.N + n]; }
-      up = up + m1.upScaleLo * dl;
+    if (m.hasUpLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m.N + n]; }
+      up = up + m.upScaleLo * dl;
     }
     y[n] = (gate / (1.0 + exp(-gate))) * up;
   }
@@ -1600,8 +1616,7 @@ var GATE_UP_SILU_GEMV4_W4A8 = /* @__PURE__ */ __name((hasDP4a, wgSize = 64) => `
 enable subgroups;
 ${hasDP4a ? "enable packed_4x8_integer_dot_product;" : ""}
 requires immediate_address_space;
-struct Meta0 { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32 };
-struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
+struct Meta { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32, gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(0) var<storage,read> x_q: array<u32>;
 @group(0) @binding(1) var<storage,read> scale_x: array<f32>;
 @group(0) @binding(2) var<storage,read> w: array<u32>;
@@ -1611,8 +1626,7 @@ struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(6) var<storage,read> gateB: array<f32>;
 @group(0) @binding(7) var<storage,read> upD: array<f32>;
 @group(0) @binding(8) var<storage,read> upB: array<f32>;
-var<immediate> m0: Meta0;
-var<immediate> m1: Meta1;
+var<immediate> m: Meta;
 
 ${hasDP4a ? "" : `
 fn dot4I8Packed(a: u32, b: u32) -> i32 {
@@ -1627,10 +1641,10 @@ var<workgroup> partU: array<f32, ${wgSize}>;
 @compute @workgroup_size(${wgSize})
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
-  let n = wid.x + wid.y * m0.gridX; let tid = lid.x;
-  if (n >= m0.N) { return; }
-  let K8 = m0.K/8u; let rbG = n*K8; let rbU = (m0.N + n)*K8;
-  let sbG = n*m0.gpr; let sbU = (m0.N + n)*m0.gpr;
+  let n = wid.x + wid.y * m.gridX; let tid = lid.x;
+  if (n >= m.N) { return; }
+  let K8 = m.K/8u; let rbG = n*K8; let rbU = (m.N + n)*K8;
+  let sbG = n*m.gpr; let sbU = (m.N + n)*m.gpr;
   var accG = 0.0; var accU = 0.0;
   for (var c = tid; c < K8; c = c + ${wgSize}u) {
     let wg = w[rbG+c]; let wu = w[rbU+c];
@@ -1670,13 +1684,13 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   if (tid == 0u) {
     let nsg = (${wgSize}u + sgsz - 1u) / sgsz; var gate = 0.0; var up = 0.0;
     for (var i = 0u; i < nsg; i = i + 1u) { gate = gate + partG[i]; up = up + partU[i]; }
-    if (m0.hasGateLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m0.N + n]; }
-      gate = gate + m1.gateScaleLo * dl;
+    if (m.hasGateLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m.N + n]; }
+      gate = gate + m.gateScaleLo * dl;
     }
-    if (m0.hasUpLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m0.N + n]; }
-      up = up + m1.upScaleLo * dl;
+    if (m.hasUpLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m.N + n]; }
+      up = up + m.upScaleLo * dl;
     }
     y[n] = (gate / (1.0 + exp(-gate))) * up;
   }
@@ -1866,6 +1880,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 var ATTN_PARTIAL_PAGED = `
 enable subgroups;
 requires immediate_address_space;
+struct Meta { nHeads:u32, nKV:u32, ctx:u32, hd:u32, nsplit:u32, chunk:u32, seq_id:u32, max_blocks:u32 };
 @group(0) @binding(0) var<storage,read> q: array<f32>;
 @group(0) @binding(1) var<storage,read> kc: array<f32>;
 @group(0) @binding(2) var<storage,read> vc: array<f32>;
@@ -1873,16 +1888,15 @@ requires immediate_address_space;
 @group(0) @binding(4) var<storage,read_write> pz: array<f32>;
 @group(0) @binding(5) var<storage,read_write> po: array<f32>;
 @group(0) @binding(6) var<storage,read> block_table: array<u32>;
-var<immediate> m: vec4<u32>;               // nHeads, nKV, ctx, hd
-var<immediate> m2: vec4<u32>;              // nsplit, chunk, seq_id, max_blocks
+var<immediate> m: Meta;
 var<workgroup> sc: array<f32,128>;
 var<workgroup> red: array<f32,32>;
 @compute @workgroup_size(128)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
   let h = wid.x; let s = wid.y; let tid = lid.x;
-  let nHeads = m.x; let nKV = m.y; let ctx = m.z; let hd = m.w;
-  let nsplit = m2.x; let chunk = m2.y; let seq_id = m2.z; let max_blocks = m2.w;
+  let nHeads = m.nHeads; let nKV = m.nKV; let ctx = m.ctx; let hd = m.hd;
+  let nsplit = m.nsplit; let chunk = m.chunk; let seq_id = m.seq_id; let max_blocks = m.max_blocks;
   let kvh = h / (nHeads / nKV);
   let qbase = h*hd; let stride = nKV*hd; let hoff = kvh*hd; let scale = 1.0/sqrt(f32(hd));
   let nsg = (128u + sgsz - 1u) / sgsz;
@@ -1923,24 +1937,24 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 var ATTN_PREFILL_PAGED = `
 enable subgroups;
 requires immediate_address_space;
+struct Meta { nHeads:u32, nKV:u32, hd:u32, T:u32, seq_id:u32, max_blocks:u32, p0:u32, p1:u32 };
 @group(0) @binding(0) var<storage,read> q: array<f32>;
 @group(0) @binding(1) var<storage,read> kc: array<f32>;
 @group(0) @binding(2) var<storage,read> vc: array<f32>;
 @group(0) @binding(3) var<storage,read_write> o: array<f32>;
 @group(0) @binding(4) var<storage,read> block_table: array<u32>;
-var<immediate> m: vec4<u32>;             // nHeads, nKV, hd, T
-var<immediate> m2: vec2<u32>;            // seq_id, max_blocks
+var<immediate> m: Meta;
 var<workgroup> ps: array<f32,256>;
 var<workgroup> acc: array<f32,128>;
 var<workgroup> red: array<f32,64>;
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
-  let h = wid.x; let t = wid.y; let tid = lid.x; let nHeads = m.x; let nKV = m.y; let hd = m.z;
+  let h = wid.x; let t = wid.y; let tid = lid.x; let nHeads = m.nHeads; let nKV = m.nKV; let hd = m.hd;
   let ctx = t + 1u; let kvh = h / (nHeads / nKV);
   let qbase = t*nHeads*hd + h*hd; let stride = nKV*hd; let hoff = kvh*hd; let scl = 1.0/sqrt(f32(hd));
   let nsg = (256u + sgsz - 1u) / sgsz;
-  let seq_id = m2.x; let max_blocks = m2.y;
+  let seq_id = m.seq_id; let max_blocks = m.max_blocks;
   for (var d = tid; d < hd; d = d + 256u) { acc[d] = 0.0; }
   var mrun = -1e30; var lrun = 0.0;
   let nblk = (ctx + 255u) / 256u;
@@ -2563,6 +2577,7 @@ var GPUBufferPool = class {
   uncachedBindGroup(pipe, buffers) {
     this._stats.uncachedBindGroups++;
     return this.dev.createBindGroup({
+      label: pipe.__name ? `${pipe.__name}:bg:${buffers.length}` : void 0,
       layout: pipe.getBindGroupLayout(0),
       entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } }))
     });
@@ -2605,6 +2620,7 @@ var QwenWGPU = class {
     this._loraEpoch = 0;
     this.lastDispatchCount = 0;
     this.packedBytes = 0;
+    this.workgroupAutotunePromise = null;
     this._argmaxReadBusy = false;
     this._topKReadBusy = false;
   }
@@ -2657,9 +2673,13 @@ var QwenWGPU = class {
     const cands = opts.candidates || [32, 64, 128, 256];
     const results = {};
     const useTS = this.hasTimestampQuery;
-    const timeKernel = /* @__PURE__ */ __name(async (pipe, n, label) => {
+    const timeKernel = /* @__PURE__ */ __name(async (spec, pipe, label) => {
+      const n = spec.n;
       const a = this._buf(n * 4);
+      const g = this._buf(n * 4);
       const y = this._buf(n * 4);
+      const buffers = spec.buffers(a, y, g);
+      const imm = spec.imm(n);
       let gpuMs = 0;
       let usedGPU = false;
       if (useTS) {
@@ -2669,8 +2689,7 @@ var QwenWGPU = class {
         const tWall0 = typeof performance !== "undefined" ? performance.now() : Date.now();
         for (let i = 0; i < iters; i++) {
           const enc = this.dev.createCommandEncoder();
-          const bg = this._bg(pipe, [a, y]);
-          const imm = new Uint32Array([n]);
+          const bg = this._bg(pipe, buffers);
           const p = enc.beginComputePass({
             timestampWrites: {
               querySet: qs,
@@ -2699,27 +2718,28 @@ var QwenWGPU = class {
         qs.destroy?.();
         usedGPU = true;
         a.destroy?.();
+        g.destroy?.();
         y.destroy?.();
         return gpuMs / iters / 1e3;
       }
       const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
       for (let i = 0; i < iters; i++) {
         const enc = this.dev.createCommandEncoder();
-        const bg = this._bg(pipe, [a, y]);
-        const imm = new Uint32Array([n]);
+        const bg = this._bg(pipe, buffers);
         this._dispatch(enc, pipe, bg, Math.ceil(n / (pipe.__wg || 256)), 1, label + ":bench", imm);
         this.dev.queue.submit([enc.finish()]);
         if (this.dev.queue.onSubmittedWorkDone) await this.dev.queue.onSubmittedWorkDone();
       }
       const ms = (typeof performance !== "undefined" ? performance.now() : Date.now()) - t0;
       a.destroy?.();
+      g.destroy?.();
       y.destroy?.();
       return ms / iters;
     }, "timeKernel");
     const kernels = [
-      { name: "add", src: ADD, n: 8192 },
-      { name: "rms", src: RMSNORM, n: 4096 },
-      { name: "silu", src: SILUMUL, n: 8192 }
+      { name: "add", src: ADD, n: 8192, buffers: /* @__PURE__ */ __name((a, y) => [a, y], "buffers"), imm: /* @__PURE__ */ __name((n) => new Uint32Array([n]), "imm") },
+      { name: "rms", src: RMSNORM, n: 4096, buffers: /* @__PURE__ */ __name((a, y, g) => [a, g, y], "buffers"), imm: /* @__PURE__ */ __name((n) => new Float32Array([n, this.cfg.rmsNormEps]), "imm") },
+      { name: "silu", src: SILUMUL, n: 8192, buffers: /* @__PURE__ */ __name((a, y) => [a, y], "buffers"), imm: /* @__PURE__ */ __name((n) => new Uint32Array([n]), "imm") }
     ];
     for (const k of kernels) {
       try {
@@ -2727,7 +2747,7 @@ var QwenWGPU = class {
         for (const wg of cands) {
           const p = this._pipe(k.src, `${k.name}:autotune:${wg}`, { WG: wg });
           p.__wg = wg;
-          const ms = await timeKernel(p, k.n, `${k.name}${wg}`);
+          const ms = await timeKernel(k, p, `${k.name}${wg}`);
           results[`${k.name}:${wg}`] = ms;
           if (ms < best.ms) best = { wg, ms };
         }
@@ -2776,12 +2796,21 @@ var QwenWGPU = class {
     });
     const comp = { module: m, entryPoint: "main" };
     if (overrides && typeof overrides === "object") comp.constants = overrides;
-    return this.dev.createComputePipeline({
+    const pipe = this.dev.createComputePipeline({
       label: name ? `${name}-pipeline` : void 0,
       layout: "auto",
       compute: comp
     });
+    if (overrides?.WG) pipe.__wg = overrides.WG;
+    if (name) pipe.__name = name;
+    return pipe;
   }
+  /*
+   * TECHNIQUE: Specialization via pipeline constants (overrides)
+   *   Workgroup size and other small values are passed as pipeline-overridable
+   *   constants instead of uniforms or JS branches. Allows the shader compiler
+   *   to specialize the binary (better than runtime if).
+   */
   // `source` is a base URL string OR a reader { range, text } (e.g. hfReader/fileReader).
   async build(source, onProgress = () => {
   }) {
@@ -2961,8 +2990,9 @@ var QwenWGPU = class {
     onProgress("ready", 1);
     if (!this._didAutoWG) {
       this._didAutoWG = true;
-      this.autotuneWorkgroups({ iters: 2, apply: true }).catch(() => {
-      });
+      this.workgroupAutotunePromise = this.autotuneWorkgroups({ iters: 2, apply: true }).catch((e) => ({
+        error: String(e)
+      }));
     }
     return this;
   }
@@ -3483,14 +3513,9 @@ var QwenWGPU = class {
       this._loraBAdd(enc, out, q, mod, this.s.loraD, part.loraKey);
     }
   }
-  gateUpSiluGemv4W4A8(enc, xBuf, x_qBuf, scale_xBuf, packed, yBuf, L) {
-    const gate = this.q4[L.gate.weight], up = this.q4[L.up.weight];
-    const gateMod = this.lora?.modules?.[L.gate.loraKey];
-    const upMod = this.lora?.modules?.[L.up.loraKey];
-    if (gateMod) this._loraA(enc, xBuf, gate, gateMod, this.s.loraD, L.gate.loraKey, "loraA:gate");
-    if (upMod) this._loraA(enc, xBuf, up, upMod, this.s.loraD2, L.up.loraKey, "loraA:up");
-    const gx = Math.min(packed.N, 65535);
-    const m0 = new Uint32Array([
+  _gateUpImmediate(packed, gx, gateMod, upMod) {
+    const imm = new Uint32Array(12);
+    imm.set([
       packed.K,
       packed.N,
       packed.gpr,
@@ -3500,7 +3525,19 @@ var QwenWGPU = class {
       gateMod ? 1 : 0,
       upMod ? 1 : 0
     ]);
-    const m1 = new Float32Array([gateMod ? gateMod.scale : 0, upMod ? upMod.scale : 0, 0, 0]);
+    const f322 = new Float32Array(imm.buffer);
+    f322[8] = gateMod ? gateMod.scale : 0;
+    f322[9] = upMod ? upMod.scale : 0;
+    return imm;
+  }
+  gateUpSiluGemv4W4A8(enc, xBuf, x_qBuf, scale_xBuf, packed, yBuf, L) {
+    const gate = this.q4[L.gate.weight], up = this.q4[L.up.weight];
+    const gateMod = this.lora?.modules?.[L.gate.loraKey];
+    const upMod = this.lora?.modules?.[L.up.loraKey];
+    if (gateMod) this._loraA(enc, xBuf, gate, gateMod, this.s.loraD, L.gate.loraKey, "loraA:gate");
+    if (upMod) this._loraA(enc, xBuf, up, upMod, this.s.loraD2, L.up.loraKey, "loraA:up");
+    const gx = Math.min(packed.N, 65535);
+    const imm = this._gateUpImmediate(packed, gx, gateMod, upMod);
     const bg = this._bgCached(
       this.pipes.gateUpSiluGemv4W4A8,
       [
@@ -3524,7 +3561,7 @@ var QwenWGPU = class {
       gx,
       Math.ceil(packed.N / gx),
       `guw4a8:${packed.N}x${packed.K}`,
-      [m0, m1]
+      imm
     );
   }
   gemm4W4A8(enc, aBuf, a_qBuf, scale_xBuf, q, yBuf, T, biasBuf, moduleKey) {
@@ -3623,9 +3660,8 @@ var QwenWGPU = class {
       S.po,
       S.blockTableBuf
     ]);
-    const immP = new Uint32Array([c.numHeads, c.numKVHeads, ctx, c.headDim]);
-    const immP2 = new Uint32Array([nsplit, this.CHUNK, 0, this.pam.maxBlocksPerSeq]);
-    this._dispatch(enc, this.pipes.attnPartialPaged, bgP, c.numHeads, nsplit, "attnP_paged", [immP, immP2]);
+    const immP = new Uint32Array([c.numHeads, c.numKVHeads, ctx, c.headDim, nsplit, this.CHUNK, 0, this.pam.maxBlocksPerSeq]);
+    this._dispatch(enc, this.pipes.attnPartialPaged, bgP, c.numHeads, nsplit, "attnP_paged", immP);
     const useF16C = this.usingF16() && this.pipes.attnCF16;
     const pipeC = useF16C ? this.pipes.attnCF16 : this.pipes.attnC;
     const bgC = this._bg(pipeC, [
@@ -3651,8 +3687,7 @@ var QwenWGPU = class {
         imm
       );
     } else {
-      const imm1 = new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T]);
-      const imm2 = new Uint32Array([0, this.pam.maxBlocksPerSeq]);
+      const imm = new Uint32Array([c.numHeads, c.numKVHeads, c.headDim, T, 0, this.pam.maxBlocksPerSeq, 0, 0]);
       this._dispatch(
         enc,
         this.pipes.attnPrefillPaged,
@@ -3666,7 +3701,7 @@ var QwenWGPU = class {
         c.numHeads,
         T,
         "attnPrefillPaged",
-        [imm1, imm2]
+        imm
       );
     }
   }
@@ -3742,17 +3777,7 @@ var QwenWGPU = class {
     if (gateMod) this._loraA(enc, xBuf, gate, gateMod, this.s.loraD, L.gate.loraKey, "loraA:gate");
     if (upMod) this._loraA(enc, xBuf, up, upMod, this.s.loraD2, L.up.loraKey, "loraA:up");
     const gx = Math.min(packed.N, 65535);
-    const m0 = new Uint32Array([
-      packed.K,
-      packed.N,
-      packed.gpr,
-      gx,
-      gateMod ? gateMod.rank : 0,
-      upMod ? upMod.rank : 0,
-      gateMod ? 1 : 0,
-      upMod ? 1 : 0
-    ]);
-    const m1 = new Float32Array([gateMod ? gateMod.scale : 0, upMod ? upMod.scale : 0, 0, 0]);
+    const imm = this._gateUpImmediate(packed, gx, gateMod, upMod);
     const bg = this._bgCached(
       this.pipes.gateUpSiluGemv4,
       [
@@ -3768,7 +3793,7 @@ var QwenWGPU = class {
       `gu:${L.index}:${this._loraEpoch}:${gateMod ? 1 : 0}:${upMod ? 1 : 0}`,
       { sensitive: !!(gateMod || upMod) }
     );
-    this._dispatch(enc, this.pipes.gateUpSiluGemv4, bg, gx, Math.ceil(packed.N / gx), `gu:${packed.N}x${packed.K}`, [m0, m1]);
+    this._dispatch(enc, this.pipes.gateUpSiluGemv4, bg, gx, Math.ceil(packed.N / gx), `gu:${packed.N}x${packed.K}`, imm);
   }
   rms(enc, xBuf, gBuf, yBuf, K) {
     const imm = new Float32Array([K, this.cfg.rmsNormEps]);
@@ -3939,14 +3964,16 @@ var QwenWGPU = class {
     const useF16 = this.usingF16() && this.pipes.addF16;
     const pipe = useF16 ? this.pipes.addF16 : this.pipes.add;
     const bg = this._bgCached(pipe, [aBuf, yBuf], `add:${n}${useF16 ? ":f16" : ""}`);
-    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / 256), 65535), 1, useF16 ? "addF16" : "add", imm);
+    const wg = pipe.__wg || 256;
+    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / wg), 65535), 1, useF16 ? "addF16" : "add", imm);
   }
   _siluMul(enc, gateBuf, upBuf, n) {
     const imm = new Uint32Array([n]);
     const useF16 = this.usingF16() && this.pipes.siluF16;
     const pipe = useF16 ? this.pipes.siluF16 : this.pipes.silu;
     const bg = this._bgCached(pipe, [gateBuf, upBuf], `silu:${n}${useF16 ? ":f16" : ""}`);
-    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / 256), 65535), 1, useF16 ? "siluF16" : "silu", imm);
+    const wg = pipe.__wg || 256;
+    this._dispatch(enc, pipe, bg, Math.min(Math.ceil(n / wg), 65535), 1, useF16 ? "siluF16" : "silu", imm);
   }
   embedRow(enc, id) {
     const e = this.q[this.plan.embed.name];
@@ -4047,7 +4074,7 @@ var QwenWGPU = class {
     try {
       const enc = this.dev.createCommandEncoder();
       for (let i = 0; i < k; i++) {
-        const imm = new Uint32Array([this.cfg.vocabSize, i]);
+        const imm2 = new Uint32Array([this.cfg.vocabSize, i]);
         this._dispatch(
           enc,
           this.pipes.topkSelect,
@@ -4055,7 +4082,7 @@ var QwenWGPU = class {
           1,
           1,
           "topk",
-          imm
+          imm2
         );
       }
       const bg = this._bg(this.pipes.sampleTopK, [
@@ -4063,9 +4090,12 @@ var QwenWGPU = class {
         this.s.sampleVals,
         this.s.sampled
       ]);
-      const immK = new Uint32Array([k]);
-      const immP = new Float32Array([temp > 0 ? temp : 1, Math.max(0, Math.min(1, r))]);
-      this._dispatch(enc, this.pipes.sampleTopK, bg, 1, 1, "sampleTopK", [immK, immP]);
+      const imm = new Uint32Array(4);
+      imm[0] = k;
+      const f322 = new Float32Array(imm.buffer);
+      f322[2] = temp > 0 ? temp : 1;
+      f322[3] = Math.max(0, Math.min(1, r));
+      this._dispatch(enc, this.pipes.sampleTopK, bg, 1, 1, "sampleTopK", imm);
       enc.copyBufferToBuffer(this.s.sampled, 0, this.sampledRead, 0, 4);
       this.dev.queue.submit([enc.finish()]);
       if (this.dev.queue.onSubmittedWorkDone) await this.dev.queue.onSubmittedWorkDone();
@@ -4101,13 +4131,15 @@ var QwenWGPU = class {
   }
   // argmax(logits) -> s.amax, within the given encoder (no submit/readback)
   argmaxInto(enc) {
+    const n = this.cfg.vocabSize || 0;
     this._dispatch(
       enc,
       this.pipes.argmax,
-      this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax, this.u.argmax], "argmax"),
+      this._bgCached(this.pipes.argmax, [this.s.logits, this.s.amax], "argmax"),
       1,
       1,
-      "argmax"
+      "argmax",
+      new Uint32Array([n])
     );
   }
   // GPU-resident batched GREEDY decode only: chains embed->step->argmax for K

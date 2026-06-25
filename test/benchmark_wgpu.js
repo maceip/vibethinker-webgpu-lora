@@ -112,6 +112,8 @@ window.run = async () => {
     kvBytes: rt.estimateKvCacheBytes(),
     pool: rt.poolStats(),
   });
+  const workgroupTuning = rt.workgroupAutotunePromise ? await rt.workgroupAutotunePromise : null;
+  if (workgroupTuning) row({ type: 'workgroup-autotune', ...workgroupTuning });
 
   const tuning = await rt.autotuneDecodeBatch();
   row({ type: 'decode-autotune', ...tuning });
@@ -166,7 +168,7 @@ window.run = async () => {
   let pos = ref.ids.length;
   const tSample = performance.now();
   for (let i = 0; i < 8; i++) {
-    const next = (await rt.topKLogits(40))[0].id;
+    const next = await rt.sampleToken(1.0, 0.5);
     rt.token(next, pos++);
   }
   const sampleSeconds = (performance.now() - tSample) / 1000;
@@ -176,7 +178,7 @@ window.run = async () => {
     tokens: 8,
     seconds: sampleSeconds,
     tokPerSec: 8 / sampleSeconds,
-    readbackBytesPerToken: 40 * 8,
+    readbackBytesPerToken: 4,
   });
 
   if (hasTimestamp) {

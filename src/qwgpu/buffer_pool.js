@@ -132,6 +132,7 @@ export class GPUBufferPool {
   uncachedBindGroup(pipe, buffers) {
     this._stats.uncachedBindGroups++;
     return this.dev.createBindGroup({
+      label: pipe.__name ? `${pipe.__name}:bg:${buffers.length}` : undefined,
       layout: pipe.getBindGroupLayout(0),
       entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } })),
     });

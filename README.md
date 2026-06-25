@@ -82,25 +82,54 @@ Requires port **8013**, WebGPU **`subgroups`**, and weights in `./model` (not bu
 
 ## Performance
 
-Throughput is hardware-dependent. Target: **≥20 tok/s** greedy decode on Intel Arc class; **~35 tok/s** on Apple M5 Max (Metal).
+Throughput is hardware-dependent. Latest clean local browser run:
+`npm run bench:wgpu` on Chrome Canary/WebGPU with `timestamp-query`, 3B-shaped mock weights, June 25, 2026.
 
-| Platform | Greedy decode (typical) |
+| Measurement | Result |
 |---|---:|
-| Apple M5 Max + Metal | ~33–35 tok/s @ long ctx |
-| Intel Arc 140V + D3D11 | ~22–24 tok/s @ short ctx |
-| LoRA active (180 modules) | ~23 tok/s (M5 reference) |
+| Greedy decode @ ctx 128 | 124.6 tok/s |
+| Greedy decode @ ctx 1,024 | 127.8 tok/s |
+| Greedy decode @ ctx 4,096 | 109.7 tok/s |
+| Greedy decode @ ctx 7,800 | 88.4 tok/s |
+| GPU top-k sampling (`topK=40`, 4-byte readback) | 22.1 tok/s |
+| Selected decode batch | 16 tokens |
+| LoRA decode | skipped (`adapters_sel` fixture unavailable) |
+
+Prefill latency:
+
+| Prompt length | Latency |
+|---:|---:|
+| 64 tokens | 99.0 ms |
+| 256 tokens | 240.9 ms |
+| 1,024 tokens | 1,015.5 ms |
+| 4,096 tokens | 6,177.7 ms |
+| 8,192 tokens | 18,694.2 ms |
+
+Single-token decode profile at ctx 18:
+
+| Kernel category | GPU time |
+|---|---:|
+| `embed` | 9.8 us |
+| `rmsNormQkvRope` | 427.9 us |
+| `attnP` | 667.3 us |
+| `attnC` | 106.8 us |
+| `g4add:2048x2048` | 405.6 us |
+| `rms` | 262.0 us |
+| `gu:11008x2048` | 1,782.1 us |
+| `g4add:2048x11008` | 1,364.1 us |
+| `gemv:151936x2048` | 520.5 us |
 
 Fused decode path: `fuseQKV` / `fuseRoPE` / `fuseMLP` / `fuseResidual`.
 
 ## Performance features added
 
-- All hot kernels converted from `var<uniform>` + bind groups to `var<immediate>` + `setImmediates` for per-dispatch metadata [pending bench data from browser test]
-- Full `shader-f16` coverage on RMS normalization, all RoPE paths, attention partial and combine, elementwise add and silu [pending bench data from browser test]
-- GPU-resident sampling: top-k selection and temperature/nucleus sampling executed entirely on GPU in a single command encoder (only the chosen token ID is read back) [pending bench data from browser test]
-- Workgroup size autotuning driven by `timestamp-query` for accurate GPU time measurement [pending bench data from browser test]
-- Specialization constants (`override`) for workgroup sizes on key kernels [pending bench data from browser test]
-- High-level `generate()` loop wired to use the GPU sampler when requested [pending bench data from browser test]
-- Benchmark harness extended to report kernel category timings, prefil latency, and decode tok/sec [pending bench data from browser test]
+- Hot kernels use `var<immediate>` + `setImmediates` for per-dispatch metadata; the benchmark completed without WebGPU validation errors.
+- `shader-f16` paths are active for RMS normalization, RoPE, attention partial/combine, elementwise add, and SiLU.
+- GPU-resident sampling keeps top-k selection and sampling on GPU; measured `topK=40` sampling was 22.1 tok/s with one token ID read back.
+- Workgroup autotuning uses `timestamp-query`; clean-run winners were `add=64`, `rms=256`, `silu=256`.
+- Specialization constants (`override`) are used for workgroup sizes on key kernels and are reflected in dispatch sizing.
+- High-level `generate()` can use the GPU sampler when requested.
+- Benchmark harness reports prefill latency, greedy decode tok/s, GPU top-k sampling tok/s, and decode sub-kernel timings.
 
 ---
 

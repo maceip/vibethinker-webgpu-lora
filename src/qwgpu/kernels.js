@@ -170,11 +170,11 @@ var<workgroup> part: array<f32,256>;
 @compute @workgroup_size(WG)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x);
-  var s = 0.0; for (var k = tid; k < K; k = k + 256u) { let v = x[k]; s = s + v*v; }
+  var s = 0.0; for (var k = tid; k < K; k = k + WG) { let v = x[k]; s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/m.x + m.y);
-  for (var k = tid; k < K; k = k + 256u) { y[k] = x[k]*inv*g[k]; }
+  for (var k = tid; k < K; k = k + WG) { y[k] = x[k]*inv*g[k]; }
 }`;
 
 // RMSNorm f16 math variant (storage f32 for engine compatibility).
@@ -192,11 +192,11 @@ var<workgroup> part: array<f16,256>;
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x);
   var s = 0.0h;
-  for (var k = tid; k < K; k = k + 256u) { let v = f16(x[k]); s = s + v*v; }
+  for (var k = tid; k < K; k = k + WG) { let v = f16(x[k]); s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/f16(m.x) + f16(m.y));
-  for (var k = tid; k < K; k = k + 256u) { y[k] = f32( f16(x[k]) * inv * f16(g[k]) ); }
+  for (var k = tid; k < K; k = k + WG) { y[k] = f32( f16(x[k]) * inv * f16(g[k]) ); }
 }`;
 
 // RoPE on a single row reshaped [nHeads, headDim] for position pos. Each thread
@@ -576,12 +576,13 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw
 // gate = silu(gate) * up  (in place). Grid-stride (n reaches T*I ~ 90M during prefill).
 export const SILUMUL = `
 requires immediate_address_space;
+override WG: u32 = 256u;
 @group(0) @binding(0) var<storage,read_write> gate: array<f32>;
 @group(0) @binding(1) var<storage,read> up: array<f32>;
 var<immediate> n: u32;
-@compute @workgroup_size(256)
+@compute @workgroup_size(WG)
 fn main(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-  let stride = nwg.x * 256u;
+  let stride = nwg.x * WG;
   for (var i = g.x; i < n; i = i + stride) { let v = gate[i]; gate[i] = (v/(1.0+exp(-v)))*up[i]; }
 }`;
 
@@ -631,11 +632,11 @@ var<workgroup> part: array<f32,256>;
 @compute @workgroup_size(WG)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x); let base = wid.x * K;
-  var s = 0.0; for (var k = tid; k < K; k = k + 256u) { let v = x[base+k]; s = s + v*v; }
+  var s = 0.0; for (var k = tid; k < K; k = k + WG) { let v = x[base+k]; s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/m.x + m.y);
-  for (var k = tid; k < K; k = k + 256u) { y[base+k] = x[base+k]*inv*g[k]; }
+  for (var k = tid; k < K; k = k + WG) { y[base+k] = x[base+k]*inv*g[k]; }
 }`;
 
 // RMSNORM_T f16 variant (prefill/batched rows).
@@ -652,11 +653,11 @@ var<workgroup> part: array<f16,256>;
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x; let K = u32(m.x); let base = wid.x * K;
   var s = 0.0h;
-  for (var k = tid; k < K; k = k + 256u) { let v = f16(x[base+k]); s = s + v*v; }
+  for (var k = tid; k < K; k = k + WG) { let v = f16(x[base+k]); s = s + v*v; }
   part[tid] = s; workgroupBarrier();
-  for (var t = 128u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
+  for (var t = WG / 2u; t > 0u; t = t/2u) { if (tid < t) { part[tid] = part[tid] + part[tid+t]; } workgroupBarrier(); }
   let inv = inverseSqrt(part[0]/f16(m.x) + f16(m.y));
-  for (var k = tid; k < K; k = k + 256u) { y[base+k] = f32( f16(x[base+k]) * inv * f16(g[k]) ); }
+  for (var k = tid; k < K; k = k + WG) { y[base+k] = f32( f16(x[base+k]) * inv * f16(g[k]) ); }
 }`;
 
 // RoPE over T rows [T][nHeads*headDim]; row r is at absolute position pos0+r. Pair-wise (no race).
@@ -916,43 +917,44 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 // This keeps the decision on GPU and reduces the per-token readback to 1 u32.
 export const SAMPLE_TOPK = `
 requires immediate_address_space;
+struct Meta { k:u32, pad:u32, temp:f32, r:f32 };
 @group(0) @binding(0) var<storage,read> ids: array<u32>;
 @group(0) @binding(1) var<storage,read> vals: array<f32>;
 @group(0) @binding(2) var<storage,read_write> outId: array<u32>;  // [1] the chosen token
-var<immediate> m: u32;         // k (number of valid top entries)
-var<immediate> params: vec2<f32>; // temp, r (uniform [0,1))
-var<workgroup> s: array<f32, 64>;  // working softmax probs (small k)
+var<immediate> m: Meta;
+var<workgroup> s: array<f32, 64>;    // working softmax probs / prefix sums (small k)
+var<workgroup> red: array<f32, 64>;  // reduction scratch for the softmax denominator
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   let tid = lid.x;
-  let k = m;
-  let temp = params.x;
-  let r = params.y;
-  let t = (temp > 0.0) ? temp : 1.0;
+  let k = m.k;
+  let temp = m.temp;
+  let r = m.r;
+  let t = select(temp, 1.0, temp <= 0.0);
 
   // Load + temperature scale into shared (one thread per slot)
   var v = -1e30;
   if (tid < k) {
     let lv = vals[tid];
-    v = (t != 1.0) ? (lv / t) : lv;
+    v = lv;
+    if (t != 1.0) { v = lv / t; }
   }
-  s[tid] = select(0.0, exp(v), tid < k);
+  let ev = select(0.0, exp(v), tid < k);
+  s[tid] = ev;
+  red[tid] = ev;
   workgroupBarrier();
 
   // sum
   for (var stride = 32u; stride > 0u; stride = stride / 2u) {
-    if (tid < stride && (tid + stride) < 64u) { s[tid] = s[tid] + s[tid + stride]; }
+    if (tid < stride && (tid + stride) < 64u) { red[tid] = red[tid] + red[tid + stride]; }
     workgroupBarrier();
   }
-  let sum = s[0];
-  if (sum <= 0.0) {
-    if (tid == 0u) { outId[0] = (k > 0u ? ids[0] : 0u); }
-    return;
-  }
+  let sum = red[0];
+  let invSum = select(0.0, 1.0 / sum, sum > 0.0);
 
   // normalize + prefix sum for nucleus / categorical pick
   if (tid < k) {
-    s[tid] = s[tid] / sum;
+    s[tid] = s[tid] * invSum;
   } else {
     s[tid] = 0.0;
   }
@@ -960,21 +962,27 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 
   // prefix sum (small k, simple scan)
   for (var stride = 1u; stride < 64u; stride = stride * 2u) {
+    var add = 0.0;
     if (tid >= stride && tid < 64u) {
-      s[tid] = s[tid] + s[tid - stride];
+      add = s[tid - stride];
+    }
+    workgroupBarrier();
+    if (tid >= stride && tid < 64u) {
+      s[tid] = s[tid] + add;
     }
     workgroupBarrier();
   }
 
   // find the smallest j such that prefix[j] >= r  (or last if r>=1)
   if (tid == 0u) {
-    var chosen = k - 1u;
-    var acc = 0.0;
-    for (var j = 0u; j < k; j = j + 1u) {
-      let pj = s[j];
-      if (r <= pj) { chosen = j; break; }
+    var chosen = select(0u, k - 1u, k > 0u);
+    if (sum > 0.0) {
+      for (var j = 0u; j < k; j = j + 1u) {
+        let pj = s[j];
+        if (r <= pj) { chosen = j; break; }
+      }
     }
-    outId[0] = ids[chosen];
+    outId[0] = select(0u, ids[chosen], k > 0u);
   }
 }`;
 
@@ -1127,8 +1135,7 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 export const GATE_UP_SILU_GEMV4 = `
 enable subgroups;
 requires immediate_address_space;
-struct Meta0 { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32 };
-struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
+struct Meta { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32, gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(0) var<storage,read> x: array<f32>;
 @group(0) @binding(1) var<storage,read> w: array<u32>;
 @group(0) @binding(2) var<storage,read> scale: array<f32>;
@@ -1137,17 +1144,16 @@ struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(5) var<storage,read> gateB: array<f32>;
 @group(0) @binding(6) var<storage,read> upD: array<f32>;
 @group(0) @binding(7) var<storage,read> upB: array<f32>;
-var<immediate> m0: Meta0;
-var<immediate> m1: Meta1;
+var<immediate> m: Meta;
 var<workgroup> partG: array<f32,64>;
 var<workgroup> partU: array<f32,64>;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
-  let n = wid.x + wid.y * m0.gridX; let tid = lid.x;
-  if (n >= m0.N) { return; }
-  let K8 = m0.K/8u; let rbG = n*K8; let rbU = (m0.N + n)*K8;
-  let sbG = n*m0.gpr; let sbU = (m0.N + n)*m0.gpr;
+  let n = wid.x + wid.y * m.gridX; let tid = lid.x;
+  if (n >= m.N) { return; }
+  let K8 = m.K/8u; let rbG = n*K8; let rbU = (m.N + n)*K8;
+  let sbG = n*m.gpr; let sbU = (m.N + n)*m.gpr;
   var accG = 0.0; var accU = 0.0;
   for (var c = tid; c < K8; c = c + 64u) {
     let bk = c*8u; let wg = w[rbG+c]; let wu = w[rbU+c];
@@ -1167,13 +1173,13 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   if (tid == 0u) {
     let nsg = (64u + sgsz - 1u) / sgsz; var gate = 0.0; var up = 0.0;
     for (var i = 0u; i < nsg; i = i + 1u) { gate = gate + partG[i]; up = up + partU[i]; }
-    if (m0.hasGateLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m0.N + n]; }
-      gate = gate + m1.gateScaleLo * dl;
+    if (m.hasGateLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m.N + n]; }
+      gate = gate + m.gateScaleLo * dl;
     }
-    if (m0.hasUpLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m0.N + n]; }
-      up = up + m1.upScaleLo * dl;
+    if (m.hasUpLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m.N + n]; }
+      up = up + m.upScaleLo * dl;
     }
     y[n] = (gate / (1.0 + exp(-gate))) * up;
   }
@@ -1460,8 +1466,7 @@ export const GATE_UP_SILU_GEMV4_W4A8 = (hasDP4a, wgSize = 64) => `
 enable subgroups;
 ${hasDP4a ? 'enable packed_4x8_integer_dot_product;' : ''}
 requires immediate_address_space;
-struct Meta0 { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32 };
-struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
+struct Meta { K:u32, N:u32, gpr:u32, gridX:u32, gateRank:u32, upRank:u32, hasGateLora:u32, hasUpLora:u32, gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(0) var<storage,read> x_q: array<u32>;
 @group(0) @binding(1) var<storage,read> scale_x: array<f32>;
 @group(0) @binding(2) var<storage,read> w: array<u32>;
@@ -1471,8 +1476,7 @@ struct Meta1 { gateScaleLo:f32, upScaleLo:f32, p0:f32, p1:f32 };
 @group(0) @binding(6) var<storage,read> gateB: array<f32>;
 @group(0) @binding(7) var<storage,read> upD: array<f32>;
 @group(0) @binding(8) var<storage,read> upB: array<f32>;
-var<immediate> m0: Meta0;
-var<immediate> m1: Meta1;
+var<immediate> m: Meta;
 
 ${
   hasDP4a
@@ -1491,10 +1495,10 @@ var<workgroup> partU: array<f32, ${wgSize}>;
 @compute @workgroup_size(${wgSize})
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
-  let n = wid.x + wid.y * m0.gridX; let tid = lid.x;
-  if (n >= m0.N) { return; }
-  let K8 = m0.K/8u; let rbG = n*K8; let rbU = (m0.N + n)*K8;
-  let sbG = n*m0.gpr; let sbU = (m0.N + n)*m0.gpr;
+  let n = wid.x + wid.y * m.gridX; let tid = lid.x;
+  if (n >= m.N) { return; }
+  let K8 = m.K/8u; let rbG = n*K8; let rbU = (m.N + n)*K8;
+  let sbG = n*m.gpr; let sbU = (m.N + n)*m.gpr;
   var accG = 0.0; var accU = 0.0;
   for (var c = tid; c < K8; c = c + ${wgSize}u) {
     let wg = w[rbG+c]; let wu = w[rbU+c];
@@ -1534,13 +1538,13 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
   if (tid == 0u) {
     let nsg = (${wgSize}u + sgsz - 1u) / sgsz; var gate = 0.0; var up = 0.0;
     for (var i = 0u; i < nsg; i = i + 1u) { gate = gate + partG[i]; up = up + partU[i]; }
-    if (m0.hasGateLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m0.N + n]; }
-      gate = gate + m1.gateScaleLo * dl;
+    if (m.hasGateLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.gateRank; r = r + 1u) { dl = dl + gateD[r] * gateB[r*m.N + n]; }
+      gate = gate + m.gateScaleLo * dl;
     }
-    if (m0.hasUpLora == 1u) {
-      var dl = 0.0; for (var r = 0u; r < m0.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m0.N + n]; }
-      up = up + m1.upScaleLo * dl;
+    if (m.hasUpLora == 1u) {
+      var dl = 0.0; for (var r = 0u; r < m.upRank; r = r + 1u) { dl = dl + upD[r] * upB[r*m.N + n]; }
+      up = up + m.upScaleLo * dl;
     }
     y[n] = (gate / (1.0 + exp(-gate))) * up;
   }
@@ -1842,6 +1846,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 export const ATTN_PARTIAL_PAGED = `
 enable subgroups;
 requires immediate_address_space;
+struct Meta { nHeads:u32, nKV:u32, ctx:u32, hd:u32, nsplit:u32, chunk:u32, seq_id:u32, max_blocks:u32 };
 @group(0) @binding(0) var<storage,read> q: array<f32>;
 @group(0) @binding(1) var<storage,read> kc: array<f32>;
 @group(0) @binding(2) var<storage,read> vc: array<f32>;
@@ -1849,16 +1854,15 @@ requires immediate_address_space;
 @group(0) @binding(4) var<storage,read_write> pz: array<f32>;
 @group(0) @binding(5) var<storage,read_write> po: array<f32>;
 @group(0) @binding(6) var<storage,read> block_table: array<u32>;
-var<immediate> m: vec4<u32>;               // nHeads, nKV, ctx, hd
-var<immediate> m2: vec4<u32>;              // nsplit, chunk, seq_id, max_blocks
+var<immediate> m: Meta;
 var<workgroup> sc: array<f32,128>;
 var<workgroup> red: array<f32,32>;
 @compute @workgroup_size(128)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
   let h = wid.x; let s = wid.y; let tid = lid.x;
-  let nHeads = m.x; let nKV = m.y; let ctx = m.z; let hd = m.w;
-  let nsplit = m2.x; let chunk = m2.y; let seq_id = m2.z; let max_blocks = m2.w;
+  let nHeads = m.nHeads; let nKV = m.nKV; let ctx = m.ctx; let hd = m.hd;
+  let nsplit = m.nsplit; let chunk = m.chunk; let seq_id = m.seq_id; let max_blocks = m.max_blocks;
   let kvh = h / (nHeads / nKV);
   let qbase = h*hd; let stride = nKV*hd; let hoff = kvh*hd; let scale = 1.0/sqrt(f32(hd));
   let nsg = (128u + sgsz - 1u) / sgsz;
@@ -1900,24 +1904,24 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 export const ATTN_PREFILL_PAGED = `
 enable subgroups;
 requires immediate_address_space;
+struct Meta { nHeads:u32, nKV:u32, hd:u32, T:u32, seq_id:u32, max_blocks:u32, p0:u32, p1:u32 };
 @group(0) @binding(0) var<storage,read> q: array<f32>;
 @group(0) @binding(1) var<storage,read> kc: array<f32>;
 @group(0) @binding(2) var<storage,read> vc: array<f32>;
 @group(0) @binding(3) var<storage,read_write> o: array<f32>;
 @group(0) @binding(4) var<storage,read> block_table: array<u32>;
-var<immediate> m: vec4<u32>;             // nHeads, nKV, hd, T
-var<immediate> m2: vec2<u32>;            // seq_id, max_blocks
+var<immediate> m: Meta;
 var<workgroup> ps: array<f32,256>;
 var<workgroup> acc: array<f32,128>;
 var<workgroup> red: array<f32,64>;
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(subgroup_size) sgsz: u32, @builtin(subgroup_invocation_id) sgid: u32) {
-  let h = wid.x; let t = wid.y; let tid = lid.x; let nHeads = m.x; let nKV = m.y; let hd = m.z;
+  let h = wid.x; let t = wid.y; let tid = lid.x; let nHeads = m.nHeads; let nKV = m.nKV; let hd = m.hd;
   let ctx = t + 1u; let kvh = h / (nHeads / nKV);
   let qbase = t*nHeads*hd + h*hd; let stride = nKV*hd; let hoff = kvh*hd; let scl = 1.0/sqrt(f32(hd));
   let nsg = (256u + sgsz - 1u) / sgsz;
-  let seq_id = m2.x; let max_blocks = m2.y;
+  let seq_id = m.seq_id; let max_blocks = m.max_blocks;
   for (var d = tid; d < hd; d = d + 256u) { acc[d] = 0.0; }
   var mrun = -1e30; var lrun = 0.0;
   let nblk = (ctx + 255u) / 256u;
