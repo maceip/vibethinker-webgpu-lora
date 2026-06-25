@@ -1,19 +1,16 @@
 /*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Custom WebGPU Qwen2.5 inference (int4, GPU KV, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted. Every major optimization technique in the kernels is called out.
+ *   ,;
+ *  \@@#\:          :/.        .:;;:
+ * _@@@@@@#+\|/!;;!-@@@--;    ,@@@@@;
+ * .!_*@@@@@@@@@@@@@@@@@@@;   |@@@@@\
+ *     .:!|+@@@@@##@@@@@@@#!  -@@@@@#,
+ *         .\@@@*;,\@@@@@@@@+,*@@@@@@+.
+ *     :*#@@@@@@@@@@@@@@-+@@@@@@@\@@@@-.
+ *     .#@@@@@#@@@@#*@@@+ /@@@@@@;\@@@@+.
+ *      ;\/:,  -@@@@;|@@@\ ,+@@@@!.+@@@@*:
+ *             ,@@@@#*@@@@@#+__!.  ,*@@@@@/
+ *              \##+_@@@@@@@@,      ,+@@@_:
+ *                   ;;,,..,:         !;.
  */
 
 // WGSL kernels for the custom Qwen2.5 WebGPU runtime. All decode-path (T=1)

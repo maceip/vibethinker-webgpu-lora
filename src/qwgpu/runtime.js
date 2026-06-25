@@ -1,19 +1,16 @@
 /*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Custom WebGPU Qwen2.5 inference (int4, GPU KV, runtime LoRA)
- * Branded ASCII art header from secure.build
- * Hand-formatted with custom spacing + explicit optimization callouts.
+ *   ,;
+ *  \@@#\:          :/.        .:;;:
+ * _@@@@@@#+\|/!;;!-@@@--;    ,@@@@@;
+ * .!_*@@@@@@@@@@@@@@@@@@@;   |@@@@@\
+ *     .:!|+@@@@@##@@@@@@@#!  -@@@@@#,
+ *         .\@@@*;,\@@@@@@@@+,*@@@@@@+.
+ *     :*#@@@@@@@@@@@@@@-+@@@@@@@\@@@@-.
+ *     .#@@@@@#@@@@#*@@@+ /@@@@@@;\@@@@+.
+ *      ;\/:,  -@@@@;|@@@\ ,+@@@@!.+@@@@*:
+ *             ,@@@@#*@@@@@#+__!.  ,*@@@@@/
+ *              \##+_@@@@@@@@,      ,+@@@_:
+ *                   ;;,,..,:         !;.
  */
 
 // Custom pure-WebGPU Qwen2.5 decode runtime. int8 weights (per-channel scale),
@@ -714,6 +711,14 @@ export class QwenWGPU {
   } // {modules: {key:{A,B,rank,scale}}}  A:[K][rank], B:[rank][N] f32 GPUBuffers
   clearLora() {
     this.lora = null;
+    this._loraEpoch++;
+    this.pool.clearSensitiveBindGroups();
+  }
+
+  // Called after an in-place mutation of the active adapter's A/B buffers (e.g. an
+  // optimizer step during training). Bumps the LoRA epoch so cached bind groups that
+  // referenced the old contents are dropped and inference re-binds the mutated buffers.
+  invalidateLora() {
     this._loraEpoch++;
     this.pool.clearSensitiveBindGroups();
   }

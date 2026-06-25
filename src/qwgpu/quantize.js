@@ -1,18 +1,16 @@
 /*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build — hand-formatted.
+ *   ,;
+ *  \@@#\:          :/.        .:;;:
+ * _@@@@@@#+\|/!;;!-@@@--;    ,@@@@@;
+ * .!_*@@@@@@@@@@@@@@@@@@@;   |@@@@@\
+ *     .:!|+@@@@@##@@@@@@@#!  -@@@@@#,
+ *         .\@@@*;,\@@@@@@@@+,*@@@@@@+.
+ *     :*#@@@@@@@@@@@@@@-+@@@@@@@\@@@@-.
+ *     .#@@@@@#@@@@#*@@@+ /@@@@@@;\@@@@+.
+ *      ;\/:,  -@@@@;|@@@\ ,+@@@@!.+@@@@*:
+ *             ,@@@@#*@@@@@#+__!.  ,*@@@@@/
+ *              \##+_@@@@@@@@,      ,+@@@_:
+ *                   ;;,,..,:         !;.
  */
 
 // Per-output-channel symmetric int8 quantization of a [out, in] weight matrix.

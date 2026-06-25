@@ -13,13 +13,13 @@
 
 | Repo | Role | Train? | Run inference? |
 |---|---|---|---|
-| **[emberglass](https://github.com/maceip/qwen-webgpu-lora)** (this) | Custom **WebGPU** runtime — int4, fused kernels, LoRA hot-swap | **No** | **Yes** (browser) |
+| **[emberglass](https://github.com/maceip/qwen-webgpu-lora)** (this) | Custom **WebGPU** runtime — int4, fused kernels, LoRA hot-swap | **Experimental** (in-browser LoRA backward) | **Yes** (browser) |
 | **[emberglass-tune](https://github.com/maceip/emberglass-tune)** | LoRA **training** — MLX + CUDA, Anthropic trace pipeline | **Yes** | No |
 | **[vibebounty](https://github.com/maceip/vibebounty)** | Bug-bounty **demo** — tuned adapter, HackerOne UI, CPU/GPU serve | Uses emberglass-tune | Yes (server) |
 
 **How the weights are made:** labeled reports → Anthropic teacher traces → LoRA SFT → `adapter_model.safetensors`. Full pipeline: **[emberglass-tune README](https://github.com/maceip/emberglass-tune)**.
 
-**How to run them here:** load base weights + optional adapter into WebGPU; forward pass only. No backward pass, no optimizer, no dataset code in this repo.
+**How to run them here:** load base weights + optional adapter into WebGPU for inference. The runtime is inference-first, but now also ships an **experimental in-browser LoRA trainer** (full backward pass + AdamW over the frozen-int4 base — see [docs/TRAINING_AND_LORA.md](docs/TRAINING_AND_LORA.md)). For production tuning, the canonical pipeline is still **emberglass-tune** (MLX/CUDA).
 
 ---
 

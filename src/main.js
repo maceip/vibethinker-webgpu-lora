@@ -1,22 +1,19 @@
 /*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
+ *   ,;
+ *  \@@#\:          :/.        .:;;:
+ * _@@@@@@#+\|/!;;!-@@@--;    ,@@@@@;
+ * .!_*@@@@@@@@@@@@@@@@@@@;   |@@@@@\
+ *     .:!|+@@@@@##@@@@@@@#!  -@@@@@#,
+ *         .\@@@*;,\@@@@@@@@+,*@@@@@@+.
+ *     :*#@@@@@@@@@@@@@@-+@@@@@@@\@@@@-.
+ *     .#@@@@@#@@@@#*@@@+ /@@@@@@;\@@@@+.
+ *      ;\/:,  -@@@@;|@@@\ ,+@@@@!.+@@@@*:
+ *             ,@@@@#*@@@@@#+__!.  ,*@@@@@/
+ *              \##+_@@@@@@@@,      ,+@@@_:
+ *                   ;;,,..,:         !;.
  */
-
 
 /* TECHNIQUE: Hand-formatted optimization annotations added per project standard */
-/*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build — hand-formatted.
- */
-
 // Browser harness wiring for the custom WebGPU Qwen2.5 runtime. Core behavior
 // lives in small services so UI changes do not accidentally change loading,
 // adapter state, prompt formatting, or generation semantics.

@@ -25,6 +25,9 @@
     "test:sampling": "node esbuild.config.mjs --entry test/sampling_wgpu.js --outfile test/sampling_bundle.js && node test/run_sampling.mjs",
     "test:topk-argmax": "node esbuild.config.mjs --entry test/topk_argmax_ties.js --outfile test/topk_argmax_ties_bundle.js && node test/run_topk_argmax_ties.mjs",
     "bench:wgpu": "node esbuild.config.mjs --entry test/benchmark_wgpu.js --outfile test/bench_bundle.js && node test/run_bench.mjs",
-    "test:deep-kernels": "node esbuild.config.mjs --entry test/deep_kernel_diff.js --outfile test/deepkernels_bundle.js && node test/run_deepkernels.mjs"
+    "test:deep-kernels": "node esbuild.config.mjs --entry test/deep_kernel_diff.js --outfile test/deepkernels_bundle.js && node test/run_deepkernels.mjs",
+    "test:backward-cpu": "node test/backward_cpu_check.mjs",
+    "test:prompt": "node test/prompt_mask_check.mjs",
+    "test:backward": "node esbuild.config.mjs --entry test/backward_validate.js --outfile test/backward_bundle.js && node test/run_backward_validate.mjs"
   }
 }

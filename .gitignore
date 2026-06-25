@@ -6,3 +6,10 @@ adapters_v1
 /bundle.js
 *.output
 .DS_Store
+
+# private SFT data + baseline adapter (do not publish to this public repo)
+test/train_samples.json
+test/proven_samples.json
+test/rung1_cases.json
+test/rung1_ref.json
+test/baseline_adapter/

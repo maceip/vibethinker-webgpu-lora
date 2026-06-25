@@ -1,19 +1,16 @@
 /*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Qwen2.5 WebGPU runtime (custom kernels, int4, runtime LoRA)
- * Branded ASCII header from secure.build
- * Hand-formatted with explicit optimization callouts.
- */
-
-/*
- * Emberglass — Custom WebGPU Qwen2.5 inference (int4, GPU KV, runtime LoRA)
- * Branded ASCII header from secure.build
- * This is the riced esbuild config (see package.json "build" / "build:prod").
+ *   ,;
+ *  \@@#\:          :/.        .:;;:
+ * _@@@@@@#+\|/!;;!-@@@--;    ,@@@@@;
+ * .!_*@@@@@@@@@@@@@@@@@@@;   |@@@@@\
+ *     .:!|+@@@@@##@@@@@@@#!  -@@@@@#,
+ *         .\@@@*;,\@@@@@@@@+,*@@@@@@+.
+ *     :*#@@@@@@@@@@@@@@-+@@@@@@@\@@@@-.
+ *     .#@@@@@#@@@@#*@@@+ /@@@@@@;\@@@@+.
+ *      ;\/:,  -@@@@;|@@@\ ,+@@@@!.+@@@@*:
+ *             ,@@@@#*@@@@@#+__!.  ,*@@@@@/
+ *              \##+_@@@@@@@@,      ,+@@@_:
+ *                   ;;,,..,:         !;.
  */
 
 // esbuild.config.mjs
@@ -35,6 +32,8 @@
 
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+
+const jsBanner = readFileSync(new URL(import.meta.url), 'utf8').match(/^\/\*[\s\S]*?\*\//)?.[0] ?? '';
 
 // Optional gzip size (not a hard dependency)
 let gzipSizeFn = null;
@@ -71,6 +70,7 @@ const base = {
   minify,
   sourcemap: sourcemap || false,
   metafile,
+  banner: jsBanner ? { js: jsBanner } : undefined,
   // Drop console.* in minified builds (safe for this engine; no user-facing console semantics)
   drop: (minify && !noConsoleDrop) ? ['console'] : [],
   // Keep names for better stack traces in non-min builds; drop in prod
