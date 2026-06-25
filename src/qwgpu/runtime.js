@@ -2339,6 +2339,40 @@ export class QwenWGPU {
     return generatedIds;
   }
 
+  // Simple high-level generation helper (Phase 5 wiring).
+  // If opts.sample === true, uses the GPU sampler (sampleToken) with given temp;
+  // otherwise falls back to argmax (greedy).
+  // This makes sampleToken part of the real generation path.
+  async generate(promptIds, maxNewTokens = 32, opts = {}) {
+    const doSample = !!opts.sample;
+    const temp = (opts.temp != null && opts.temp > 0) ? opts.temp : 1.0;
+    await this.prefillBatch(promptIds);
+
+    const generatedIds = [];
+    let pos = promptIds.length;
+
+    // first token after prefill
+    let next = doSample ? await this.sampleToken(temp) : await this.argmaxLogits();
+    generatedIds.push(next);
+    if (opts.onToken) opts.onToken(next);
+    this.dev.queue.writeBuffer(this.s.amax, 0, new Uint32Array([next]));
+
+    while (generatedIds.length < maxNewTokens) {
+      this._resetUni();
+      const enc = this.dev.createCommandEncoder();
+      this.embedFromBuf(enc);
+      this.step(enc, 0, pos);
+      this.dev.queue.submit([enc.finish()]);
+
+      next = doSample ? await this.sampleToken(temp) : await this.argmaxLogits();
+      generatedIds.push(next);
+      if (opts.onToken) opts.onToken(next);
+      this.dev.queue.writeBuffer(this.s.amax, 0, new Uint32Array([next]));
+      pos += 1;
+    }
+    return generatedIds;
+  }
+
   setupDebugCapture(T, K, rank, N) {
     this.debugCapture = true;
     this.debugT = T;

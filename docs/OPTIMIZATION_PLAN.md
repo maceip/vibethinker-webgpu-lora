@@ -354,6 +354,21 @@ Next linear items (in order):
 - More overrides and paged/prefill f16 attention kernels.
 - Continue Phase 5 (stop token checks on GPU, Gumbel-max option, etc.).
 
+**Latest linear step (continue):**
+- Wired `sampleToken` into a real high-level generation path:
+  - Added `async generate(promptIds, maxNewTokens, { sample, temp, onToken })`.
+  - When `sample: true`, the loop uses `sampleToken(temp)` instead of `argmaxLogits()` for every generated token (after prefill).
+  - Greedy path unchanged (argmax).
+  - This makes the GPU sampler participate in end-to-end generation (the item "Wire sampleToken into high-level generation").
+- Small test harness update: f16 diff now also exercises sampling parity (fixed r) under both precisions.
+- Still 0 var<uniform>. Build clean.
+
+Next linear (pick one on next continue):
+- Pure-GPU topK + sample chaining (keep selection + decision on device, read back only the final id).
+- Real hardware run of harness + sampling numbers.
+- Autotune improvements + auto-apply.
+- More Phase 5 (stop tokens on GPU, etc.).
+
 ---
 
 *This document is the single source of truth for the optimization effort.*
